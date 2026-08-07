@@ -1,0 +1,92 @@
+units           metal
+boundary        p p p
+atom_style      atomic
+newton on
+
+read_data       structure.data
+
+mass 1 12.011
+mass 2 1.008
+mass 3 15.9994
+mass 4 14.0067
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes one 20000 page 200000
+
+pair_style      mliap unified /home/ibeth/RAUL/uspexrunz/MACE-OFF23_small.model-mliap_lammps.pt 0
+pair_coeff      * * C H O N
+
+thermo          50
+thermo_style    custom step temp pe etotal press vol density lx ly lz
+
+timestep        0.0004
+
+# ===================================================================
+# ETAPA 1: Relajacion de geometria interna a volumen fijo
+# Resuelve contactos cortos heredados de PyXtal sin mover la celda.
+# ===================================================================
+minimize        1.0e-6 1.0e-6 1000 10000
+
+# ===================================================================
+# ETAPA 2: Compresion isotropica forzada por presion alta
+#
+# PROBLEMA del protocolo anterior (in_v2.lammps Etapa 2):
+#   box/relax iso 0.0 a densidad ~0.35 g/cm³ no comprime porque el
+#   virial de MACE-OFF es ≈ 0 bar cuando las moleculas estan lejos.
+#   El minimizador ve gradiente ≈ 0 y converge sin mover la celda.
+#
+# SOLUCION: aplicar P_ext = 3000 bar (0.3 GPa).
+#   El termino entalpico H = E + P*V impone un gradiente constante
+#   dH/dV = P_ext > 0 que fuerza la reduccion de volumen aunque
+#   dE/dV ≈ 0. La celda comprime hasta que la presion interna
+#   (virial) alcanza P_ext ≈ 3000 bar, lo que corresponde a
+#   densidades tipicas de cristales organicos compactos (~1.2-1.4 g/cm³).
+#
+#   vmax 0.002: maximo 0.2% de cambio de volumen por paso → ~500 pasos
+#   para comprimir de 0.35 a 1.2 g/cm³. La geometria interna se
+#   optimiza en cada paso por el minimizador.
+# ===================================================================
+fix             rx_press all box/relax iso 3000.0 vmax 0.002
+minimize        1.0e-4 1.0e-4 10000 100000
+unfix           rx_press
+
+# ===================================================================
+# ETAPA 3: Alivio de presion hacia equilibrio a P = 0 bar
+# La estructura ya esta densa. Ahora se relaja isotropicamente
+# hacia la densidad de equilibrio real (0 bar externo).
+# ===================================================================
+fix             rx1 all box/relax iso 0.0 vmax 0.005
+minimize        1.0e-6 1.0e-6 3000 30000
+unfix           rx1
+
+# ===================================================================
+# ETAPA 4: Relajacion anisotropica (ajuste de ejes y angulos)
+# Permite que a, b, c, alpha, beta, gamma se acomoden libremente.
+# ===================================================================
+fix             rx2 all box/relax aniso 0.0 vmax 0.005
+minimize        1.0e-8 1.0e-8 3000 30000
+unfix           rx2
+
+# ===================================================================
+# ETAPA 5: Dinamica NPT corta — supera barreras locales
+# La celda ya es densa y estable. El NPT a baja temperatura solo
+# ayuda a saltar barreras energeticas menores entre rotameros.
+# ===================================================================
+velocity        all create 100.0 4928459 rot yes mom yes
+fix             md1 all npt temp 100.0 10.0 0.04 tri 0.0 0.0 0.4
+run             1000
+unfix           md1
+
+# ===================================================================
+# ETAPA 6: Minimizacion final profunda (Deep Quench)
+# ===================================================================
+fix             rx3 all box/relax aniso 0.0
+minimize        1.0e-12 1.0e-10 5000 200000
+unfix           rx3
+
+# ===================================================================
+
+variable        myEnergy equal pe
+print           "${myEnergy}" file energy.dat
+
+write_data      minimized.data
