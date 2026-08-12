@@ -30,7 +30,6 @@ keywords:
   - MACE-OFF
   - molecular crystals
   - LAMMPS
-# TODO al aceptarse: completar journal, volumen, paginas, ano y DOI
 preferred-citation:
   type: article
   title: "The Well-Tempered Organic Crystals by Bayesian Active Crystal Hopping"
