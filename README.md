@@ -25,6 +25,7 @@ physical prior is a plausible density window for organic crystals
 ## Requirements
 
 - Python 3.10+ with `numpy`, `scipy`, `scikit-learn`, `ase`, `pyxtal`
+  (`pip install -r requirements.txt` for the verified pins)
 - **LAMMPS** built with the ML-IAP package and **Kokkos** (GPU), plus the
   `lammps` Python module importable by the interpreter that runs CrYAL
 - A **MACE-OFF** model exported for ML-IAP (e.g. `MACE-OFF23_small.model-mliap_lammps.pt`)
@@ -32,6 +33,21 @@ physical prior is a plausible density window for organic crystals
 The Kokkos build is not optional: the MACE ML-IAP interface reaches
 `forward_exchange`, which exists only on the Kokkos code path. A plain `lmp`
 fails with `AttributeError: 'MLIAPDataPy' object has no attribute 'forward_exchange'`.
+
+**[INSTALL.md](INSTALL.md)** has the full procedure, including what to do when an
+exported `.pt` model stops loading after a `mace-torch` upgrade, and how to check
+a rebuilt stack against a deterministic result before trusting its numbers.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -t .
+```
+
+45 tests over the pure-Python core — no LAMMPS, no GPU, under a second, and no
+dependency beyond the standard library. One expected failure is deliberate: it
+records that `unwrap_molecule` cannot rebuild a molecule longer than half the
+cell, which is safe only because its single caller is off by default.
 
 ## Usage
 
