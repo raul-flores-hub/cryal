@@ -44,7 +44,7 @@ a rebuilt stack against a deterministic result before trusting its numbers.
 python -m unittest discover -s tests -t .
 ```
 
-45 tests over the pure-Python core — no LAMMPS, no GPU, under a second, and no
+80 tests over the pure-Python core — no LAMMPS, no GPU, under a second, and no
 dependency beyond the standard library. One expected failure is deliberate: it
 records that `unwrap_molecule` cannot rebuild a molecule longer than half the
 cell, which is safe only because its single caller is off by default.
@@ -85,7 +85,8 @@ starts from PyXtal alone.
 | `run_cryal.py` | entry point |
 | `cryal/config.py` | `INPUT.txt` parser → configuration dataclass |
 | `cryal/structure_gen.py` | symmetry-aware generation at a target volume |
-| `cryal/lammps_runner.py` | LAMMPS/MACE-OFF relaxation and energy evaluation |
+| `cryal/backends/` | selectable energy backends (`base.py` holds the contract) |
+| `cryal/lammps_runner.py` | compatibility shim for the pre-backends API |
 | `cryal/gp_model.py` | GP surrogate and Expected-Improvement acquisition |
 | `cryal/active_learning.py` | the active-learning loop |
 | `cryal/chpi_optimizer.py` | optional geometric CH–π contact optimizer |
@@ -114,28 +115,82 @@ starts from PyXtal alone.
   independent of the GP and remains active. Omitting the key leaves the surrogate
   on, so inputs written before this option behave exactly as before.
 
-## Extending CrYAL
+## Energy backends
 
-The relaxation backend is deliberately isolated. The active-learning loop
-reaches the energy engine through a single call, in `cryal/active_learning.py`:
+`energyBackend` in `INPUT.txt` chooses the engine that relaxes each candidate
+and returns its energy:
 
-```python
-relaxed, energy = evaluate_structure(
-    atoms, cfg, step_dir, ref_bonds, mol_size, logger=logger)
+| value | engine |
+|---|---|
+| `lammps_mace` (default) | an external LAMMPS process driving MACE-OFF23 through `mliap-unified` — the backend used for the published run |
+| `ase` | in-process relaxation with any ASE calculator, named by dotted path |
+
+Omitting the key means `lammps_mace`, so every input written before backends
+existed — including the one archived with `v1.0.0` — keeps its exact meaning.
+
+The `ase` backend takes no dependency of its own: the calculator is imported
+from the dotted path you give it, built once, and reused for the whole run.
+
+```
+% ENERGY_BACKEND
+energyBackend       = ase
+
+% BACKEND_ASE
+aseCalculator       = mace.calculators.mace_off
+aseCalculatorKwargs = model=medium device=cuda
+aseOptimizer        = FIRE
+aseFmax             = 0.05
+aseRelaxCell        = true
 ```
 
-The contract is narrow: take an ASE `Atoms` object, return a relaxed `Atoms`
-and a total energy in eV, or `(None, None)` if the relaxation fails. Any engine
-that honors it can stand in for LAMMPS — CP2K, Quantum ESPRESSO and DFTB+ all
-ship ASE calculator interfaces that fit. Nothing else in the loop is aware of
-the calculator: the surrogate consumes only cell parameters, density and energy.
+Two caveats. The `ase` backend performs a *local* relaxation (optimizer plus
+cell filter), not the MD-NPT annealing protocol written in the LAMMPS input
+script used in the article, so it explores a smaller basin around each
+candidate. And energies are comparable only within one backend and one
+potential: never merge databases built with different engines, and keep the
+backend you started with when resuming a run.
+
+## Extending CrYAL
+
+A new backend is a subclass of `EnergyBackend` (`cryal/backends/base.py`) with
+one method:
+
+```python
+@register
+class MyBackend(EnergyBackend):
+    name = "my_engine"
+
+    def relax(self, atoms, step_dir, logger=None):
+        ...
+        return relaxed_atoms, energy_eV   # or (None, None) on failure
+```
+
+The contract is narrow: take an ASE `Atoms`, return a relaxed `Atoms` and a
+total energy in eV, or `(None, None)` if the relaxation fails. Failures are
+reported, not raised — one bad candidate must not end a search. Everything
+around `relax()` is inherited from the base class and applies to every engine:
+
+1. the **pre-relaxation integrity gate**, which rejects sub-Ångström atomic
+   overlaps before the engine starts. This one matters: such overlaps make a
+   machine-learned potential produce forces of order 10⁵ eV/Å, and the run then
+   dies minutes later with an error pointing at the relaxation instead of at
+   the geometry. The gate costs seconds instead of minutes per bad candidate;
+2. a **sanity bound** on the returned energy (`energySanityMax`);
+3. the **molecular-integrity check**, which rejects relaxations that broke or
+   formed covalent bonds.
+
+Nothing else in the loop is aware of the calculator: the surrogate consumes
+only cell parameters, density and energy. `CP2K`, `Quantum ESPRESSO` and
+`DFTB+` all ship ASE calculator interfaces and can be driven today through the
+`ase` backend without writing any code.
+
+`cryal/lammps_runner.py` remains as a shim: `evaluate_structure()` and
+`get_reference_bonds()` still import from there, and `evaluate_structure()` is
+the LAMMPS backend regardless of `energyBackend`.
 
 The acquisition strategy is self-contained in the same way. `cryal/gp_model.py`
 owns both the Gaussian process and the Expected-Improvement criterion, so other
 surrogates or acquisition functions can replace them without touching the loop.
-
-These alternative backends and algorithms are **not implemented**; this section
-documents where they would attach.
 
 ## Citing
 

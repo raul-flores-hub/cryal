@@ -27,7 +27,7 @@ import os
 import warnings
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +105,39 @@ def _strlist(raw, key, default):
     return v.split()
 
 
+def _optfloat(raw, key, default):
+    """A float, or None when the value spells a disabled check."""
+    v = _get(raw, key)
+    if v is None:
+        return default
+    if v.strip().lower() in ('none', 'off', 'disabled'):
+        return None
+    return float(v)
+
+
+def _kwargs(raw, key, default):
+    """
+    Parse 'name=value name2=value2' into a dict, with values typed by
+    ast.literal_eval when they look like Python literals and left as strings
+    otherwise ('cuda' stays 'cuda', '5.0' becomes 5.0, 'True' becomes True).
+    """
+    v = _get(raw, key)
+    if v is None:
+        return default
+    import ast
+    out = {}
+    for token in v.split():
+        if '=' not in token:
+            warnings.warn(f"{key}: ignoring '{token}' (expected name=value)")
+            continue
+        name, _, value = token.partition('=')
+        try:
+            out[name.strip()] = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            out[name.strip()] = value
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Config dataclass
 # ---------------------------------------------------------------------------
@@ -114,13 +147,35 @@ class Config:
     # --- GENERAL ---
     molecule_file:       str   = "molecule.xyz"
     Z:                   int   = 4
-    lammps_input:        str   = "in_v3.lammps"
-    lammps_command:      str   = "lmp"
-    spec_order:          List[str] = field(default_factory=lambda: ["C", "H", "O", "N"])
     random_seed:         int   = 42
     output_dir:          str   = "AL_results"
     log_level:           str   = "INFO"
     resume:              bool  = False   # continue from an existing output_dir
+
+    # --- ENERGY BACKEND ---
+    # Which engine relaxes a candidate and returns its energy. The default is
+    # the LAMMPS/MACE-OFF path used for the published run, so an input file
+    # written before backends existed keeps its exact meaning.
+    energy_backend:      str   = "lammps_mace"
+    # Total energies above this (eV, whole cell) are treated as a failed
+    # relaxation. Only meaningful against a given potential's zero of energy;
+    # 'none' switches the check off.
+    energy_sanity_max:   Optional[float] = -100.0
+
+    # --- BACKEND: lammps_mace ---
+    lammps_input:        str   = "in_v3.lammps"
+    lammps_command:      str   = "lmp"
+    spec_order:          List[str] = field(default_factory=lambda: ["C", "H", "O", "N"])
+
+    # --- BACKEND: ase ---
+    # Dotted path to a calculator class or factory, called once with
+    # ase_calculator_kwargs and reused for the whole run.
+    ase_calculator:      str   = ""
+    ase_calculator_kwargs: Dict[str, Any] = field(default_factory=dict)
+    ase_optimizer:       str   = "FIRE"
+    ase_fmax:            float = 0.05     # eV/Å
+    ase_max_steps:       int   = 500
+    ase_relax_cell:      bool  = True
 
     # --- ACTIVE LEARNING ---
     num_cycles:          int   = 10
@@ -224,13 +279,28 @@ def load_config(filepath: str = "INPUT.txt") -> Config:
     # GENERAL
     cfg.molecule_file     = _str(raw, "moleculefile", cfg.molecule_file)
     cfg.Z                 = _int(raw, "z", cfg.Z)
-    cfg.lammps_input      = _str(raw, "lammpsinput", cfg.lammps_input)
-    cfg.lammps_command    = _str(raw, "lammpscommand", cfg.lammps_command)
-    cfg.spec_order        = _strlist(raw, "specorder", cfg.spec_order)
     cfg.random_seed       = _int(raw, "randomseed", cfg.random_seed)
     cfg.output_dir        = _str(raw, "outputdir", cfg.output_dir)
     cfg.log_level         = _str(raw, "loglevel", cfg.log_level)
     cfg.resume            = _bool(raw, "resume", cfg.resume)
+
+    # ENERGY BACKEND
+    cfg.energy_backend    = _str(raw, "energybackend", cfg.energy_backend)
+    cfg.energy_sanity_max = _optfloat(raw, "energysanitymax", cfg.energy_sanity_max)
+
+    # BACKEND: lammps_mace
+    cfg.lammps_input      = _str(raw, "lammpsinput", cfg.lammps_input)
+    cfg.lammps_command    = _str(raw, "lammpscommand", cfg.lammps_command)
+    cfg.spec_order        = _strlist(raw, "specorder", cfg.spec_order)
+
+    # BACKEND: ase
+    cfg.ase_calculator        = _str(raw, "asecalculator", cfg.ase_calculator)
+    cfg.ase_calculator_kwargs = _kwargs(raw, "asecalculatorkwargs",
+                                        cfg.ase_calculator_kwargs)
+    cfg.ase_optimizer         = _str(raw, "aseoptimizer", cfg.ase_optimizer)
+    cfg.ase_fmax              = _float(raw, "asefmax", cfg.ase_fmax)
+    cfg.ase_max_steps         = _int(raw, "asemaxsteps", cfg.ase_max_steps)
+    cfg.ase_relax_cell        = _bool(raw, "aserelaxcell", cfg.ase_relax_cell)
 
     # ACTIVE LEARNING
     cfg.num_cycles            = _int(raw, "numcycles", cfg.num_cycles)
@@ -311,8 +381,14 @@ def load_config(filepath: str = "INPUT.txt") -> Config:
     # --- Validate required files ---
     if not os.path.exists(cfg.molecule_file):
         raise FileNotFoundError(f"moleculeFile not found: {cfg.molecule_file}")
-    if not os.path.exists(cfg.lammps_input):
-        raise FileNotFoundError(f"lammpsInput not found: {cfg.lammps_input}")
+
+    # Everything else the run needs depends on which engine will run it: the
+    # LAMMPS input script is mandatory for lammps_mace and meaningless to the
+    # ASE backend. Ask the selected backend, and fail here rather than after a
+    # hundred structures have been generated. Imported locally to keep the
+    # config module free of any dependency on the backends package.
+    from .backends import backend_class
+    backend_class(cfg.energy_backend).validate_config(cfg)
 
     # --- Compute molecular weight and auto volume range ---
     cfg.mol_weight = _compute_mol_weight(cfg.molecule_file)
@@ -339,6 +415,15 @@ def _compute_mol_weight(xyz_file: str) -> float:
     return mw
 
 
+def _backend_line(cfg: Config) -> str:
+    """One-line description of the selected backend, for the run summary."""
+    try:
+        from .backends import backend_class
+        return backend_class(cfg.energy_backend)(cfg).describe()
+    except Exception:
+        return cfg.energy_backend
+
+
 def print_config_summary(cfg: Config, logger=None):
     """Print a summary of the active configuration."""
     lines = [
@@ -347,7 +432,7 @@ def print_config_summary(cfg: Config, logger=None):
         "=" * 60,
         f"  Molecule:        {cfg.molecule_file}  (MW={cfg.mol_weight:.2f} g/mol)",
         f"  Z:               {cfg.Z}",
-        f"  LAMMPS input:    {cfg.lammps_input}",
+        f"  Energy backend:  {_backend_line(cfg)}",
         f"  Output dir:      {cfg.output_dir}",
         f"  Random seed:     {cfg.random_seed}",
         f"  Resume:          {'ON' if cfg.resume else 'OFF'}",

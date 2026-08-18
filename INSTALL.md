@@ -19,7 +19,7 @@ That covers `import cryal`. Check it:
 python -m unittest discover -s tests -t .
 ```
 
-45 tests, no LAMMPS, no GPU, under a second. One is an expected failure and is
+80 tests, no LAMMPS, no GPU, under a second. One is an expected failure and is
 supposed to be — it records a known limitation of `unwrap_molecule`.
 
 ## 2. LAMMPS with ML-IAP and Kokkos
@@ -42,7 +42,7 @@ lammpsCommand = lmp -k on g 1 -sf kk -pk kokkos newton on neigh half
 ```
 
 The embedded interpreter inside `lmp` does not find the `lammps` module on its
-own. CrYAL handles this for you — `lammps_runner._lammps_env()` puts the
+own. CrYAL handles this for you — `cryal/backends/lammps_mace.py::_lammps_env()` puts the
 site-packages path on `PYTHONPATH` for the subprocess — but if you run `lmp` by
 hand you need both the binary on `PATH` and:
 

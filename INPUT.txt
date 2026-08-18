@@ -17,13 +17,36 @@
 % GENERAL
 moleculeFile          = molecule.xyz    # XYZ file of one molecule
 Z                     = 4              # molecules per unit cell
-lammpsInput           = in_v3.lammps   # LAMMPS input script for relaxation
-lammpsCommand         = lmp -k on g 1 -sf kk -pk kokkos newton on neigh half   # Kokkos GPU build required by MACE-OFF mliap (forward_exchange)
-specOrder             = C H O N        # element order for LAMMPS atom types
 randomSeed            = 33936
 outputDir             = AL_results     # all output goes here
 logLevel              = INFO           # INFO or DEBUG
 resume                = false          # true (or pass --resume) = continue an interrupted run in outputDir
+
+% ENERGY_BACKEND
+# Which engine relaxes each candidate and returns its energy.
+#   lammps_mace  external LAMMPS process driving MACE-OFF23 (the published run)
+#   ase          in-process relaxation with any ASE calculator (see below)
+# Omitting the key means lammps_mace, so inputs written before backends
+# existed keep their exact meaning.
+energyBackend         = lammps_mace
+energySanityMax       = -100.0         # eV per cell; energies above this = failed relaxation ('none' disables)
+
+% BACKEND_LAMMPS
+lammpsInput           = in_v3.lammps   # LAMMPS input script for relaxation
+lammpsCommand         = lmp -k on g 1 -sf kk -pk kokkos newton on neigh half   # Kokkos GPU build required by MACE-OFF mliap (forward_exchange)
+specOrder             = C H O N        # element order for LAMMPS atom types
+
+% BACKEND_ASE
+# Only read when energyBackend = ase. The calculator is named by dotted path,
+# so no calculator is a dependency of CrYAL; it is built once and reused.
+# NOTE: this is a local relaxation, not the MD-NPT protocol of the LAMMPS
+# script, and energies from different backends are not comparable.
+# aseCalculator       = mace.calculators.mace_off
+# aseCalculatorKwargs = model=medium device=cuda
+# aseOptimizer        = FIRE           # FIRE, BFGS, LBFGS, BFGSLineSearch, GPMin
+# aseFmax             = 0.05           # eV/A
+# aseMaxSteps         = 500            # a relaxation that does not converge counts as failed
+# aseRelaxCell        = true           # relax cell and positions (FrechetCellFilter)
 
 % ACTIVE_LEARNING
 numCycles             = 10             # number of AL cycles after initialization

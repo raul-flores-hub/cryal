@@ -58,7 +58,7 @@ from .config import Config, print_config_summary
 from .utils import (setup_logger, get_molecules_robust,
                     compute_density, cell_params_dict, check_bond_integrity)
 from .structure_gen import generate_structures, load_seeds
-from .lammps_runner import evaluate_structure, get_reference_bonds
+from .backends import get_backend, get_reference_bonds
 from .gp_model import GPSurrogate, maximize_ei, gp_report
 
 try:
@@ -163,12 +163,12 @@ def _apply_chpi(struct_list, mol_ring_info, ch_pairs, mol_size, cfg, logger):
     return optimized
 
 
-def _evaluate_batch(struct_list, cfg, cycle: int, batch_start: int,
+def _evaluate_batch(struct_list, cfg, backend, cycle: int, batch_start: int,
                     ref_bonds, mol_size: int,
                     db: CrystalDatabase, logger) -> int:
     """
-    Evaluate a batch of structures with LAMMPS and add results to database.
-    Returns the number of successful evaluations.
+    Evaluate a batch of structures with the energy backend and add the results
+    to the database. Returns the number of successful evaluations.
     """
     n_ok = 0
     for i, s in enumerate(struct_list):
@@ -179,11 +179,11 @@ def _evaluate_batch(struct_list, cfg, cycle: int, batch_start: int,
         logger.info(f"  Evaluating {step_name}  source={s.get('source','?')}  "
                     f"SG={s.get('space_group','?')}")
 
-        relaxed, energy = evaluate_structure(
-            s['atoms'], cfg, step_dir, ref_bonds, mol_size, logger=logger)
+        relaxed, energy = backend.evaluate(
+            s['atoms'], step_dir, ref_bonds, mol_size, logger=logger)
 
         if relaxed is None:
-            logger.info(f"    → FAILED (LAMMPS or integrity)")
+            logger.info(f"    → FAILED (relaxation or integrity)")
             continue
 
         cp   = cell_params_dict(relaxed)
@@ -291,6 +291,18 @@ def run(cfg: Config):
     logger.info(f"Molecule: {mol_size} atoms/molecule  MW={cfg.mol_weight:.2f} g/mol")
     logger.info(f"Volume range: [{cfg.volume_min():.0f}, {cfg.volume_max():.0f}] Å³")
 
+    # The one object that knows how a structure becomes an energy. Built
+    # once: an in-process backend would otherwise reload its potential for
+    # every candidate.
+    backend = get_backend(cfg, logger)
+    logger.info(f"Energy backend: {backend.describe()}")
+    if cfg.energy_sanity_max is not None:
+        # Worth stating: the bound is calibrated for MACE-OFF total energies,
+        # and a different potential's zero of energy can make it reject
+        # everything silently.
+        logger.info(f"  energies above {cfg.energy_sanity_max:.1f} eV count "
+                    "as a failed relaxation (energySanityMax)")
+
     ref_bonds = get_reference_bonds(cfg.molecule_file,
                                      cfg.integrity_max_bond_ratio) \
                 if cfg.check_molecular_integrity else []
@@ -335,7 +347,7 @@ def run(cfg: Config):
         structs = _apply_chpi(structs, mol_ring_info, ch_pairs, mol_size, cfg, logger)
 
         # Evaluate
-        n_ok = _evaluate_batch(structs, cfg, cycle=0, batch_start=0,
+        n_ok = _evaluate_batch(structs, cfg, backend, cycle=0, batch_start=0,
                                ref_bonds=ref_bonds, mol_size=mol_size,
                                db=db, logger=logger)
 
@@ -410,7 +422,7 @@ def run(cfg: Config):
 
         # Evaluate
         batch_start = sum(1 for r in db.records if r['cycle'] < cycle)
-        n_ok = _evaluate_batch(structs, cfg, cycle=cycle,
+        n_ok = _evaluate_batch(structs, cfg, backend, cycle=cycle,
                                batch_start=batch_start,
                                ref_bonds=ref_bonds, mol_size=mol_size,
                                db=db, logger=logger)
