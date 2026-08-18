@@ -32,7 +32,10 @@ keywords:
   - LAMMPS
 preferred-citation:
   type: article
-  title: "The Well-Tempered Organic Crystals by Bayesian Active Crystal Hopping"
+  title: >-
+    Bayesian Active Crystal Hopping: Machine-Learned Potentials and
+    Surrogate-Guided Sampling for Crystal Structure Prediction of
+    π-Extended Organic Molecules
   authors:
     - family-names: "Flores Mena"
       given-names: "Raúl Rodolfo"
