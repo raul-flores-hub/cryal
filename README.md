@@ -89,6 +89,14 @@ starts from PyXtal alone.
   volume are fixed, and constraining them all over-determines the packing.
 - **The CH–π optimizer is off by design in production runs.** An ablation showed
   it does not improve the search. It remains available via `useChpiOptimizer`.
+- **The Bayesian guidance can be ablated.** Setting `useGP = false` runs the same
+  workflow with the surrogate switched off: candidates are generated without the
+  Expected-Improvement bias, while the generator, the potential, the relaxation
+  protocol and the stopping rule stay as they are. This is the control that
+  separates what the GP contributes from what the structure generator does. Note
+  that it is not a pure random search — the pool of perturbed incumbents is
+  independent of the GP and remains active. Omitting the key leaves the surrogate
+  on, so inputs written before this option behave exactly as before.
 
 ## Extending CrYAL
 

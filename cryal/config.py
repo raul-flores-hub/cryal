@@ -151,6 +151,18 @@ class Config:
     beta_mode:           Optional[float] = None  # only for triangular
 
     # --- GP ---
+    # useGP = false runs the identical workflow with the surrogate switched off:
+    # candidates are generated at random instead of half-biased by Expected
+    # Improvement. It is the ablation control for the Bayesian guidance --
+    # same generator, same potential, same relaxation protocol, same stopping
+    # rule -- and isolates the contribution of the GP from that of the
+    # structure generator.
+    #
+    # This is NOT a pure random search: the pool of perturbed incumbents is
+    # independent of the GP and stays active, so the local refinement of the
+    # best structures found so far still happens. What is removed is only the
+    # Expected-Improvement bias on where new candidates are generated.
+    use_gp:              bool  = True
     gp_kernel:           str   = "matern25"
     gp_n_restarts:       int   = 5
     ei_xi:               float = 0.01
@@ -258,6 +270,7 @@ def load_config(filepath: str = "INPUT.txt") -> Config:
         cfg.beta_distribution = "uniform"
 
     # GP
+    cfg.use_gp            = _bool(raw, "usegp", cfg.use_gp)
     cfg.gp_kernel         = _str(raw, "gpkernel", cfg.gp_kernel)
     cfg.gp_n_restarts     = _int(raw, "gpnrestarts", cfg.gp_n_restarts)
     cfg.ei_xi             = _float(raw, "eixi", cfg.ei_xi)
@@ -351,6 +364,7 @@ def print_config_summary(cfg: Config, logger=None):
         f"  Space groups:    {cfg.space_groups}",
         f"  SG weights:      {cfg.sg_weights}",
         "",
+        f"  GP surrogate:    {'ON' if cfg.use_gp else 'OFF — no EI bias (ablation control)'}",
         f"  CH-pi optimizer: {'ON' if cfg.use_chpi_optimizer else 'OFF'}",
         f"  Seeds folder:    {'ON — ' + cfg.seeds_folder if cfg.use_seeds_folder else 'OFF'}",
         f"  Integrity check: {'ON' if cfg.check_molecular_integrity else 'OFF'}",

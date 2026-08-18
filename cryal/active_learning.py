@@ -370,7 +370,11 @@ def run(cfg: Config):
         best_energy_prev = best_now
 
         # --- Train GP ---
-        if len(db) >= 5:
+        if not cfg.use_gp:
+            logger.info("GP disabled (useGP = false) — candidates generated "
+                        "without EI bias")
+            suggestions = None
+        elif len(db) >= 5:
             logger.info(f"Training GP on {len(db)} structures...")
             try:
                 gp.fit(db.records)
