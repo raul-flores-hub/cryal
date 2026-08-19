@@ -21,7 +21,7 @@ That covers `import cryal`. Check it:
 python -m unittest discover -s tests -t .
 ```
 
-96 tests, no LAMMPS, no GPU, under a second. One is an expected failure and is
+101 tests, no LAMMPS, no GPU, under a second. One is an expected failure and is
 supposed to be — it records a known limitation of `unwrap_molecule`.
 
 ## 2. LAMMPS with ML-IAP and Kokkos

@@ -46,7 +46,7 @@ from cryal.config import Config, load_config
 
 MINIMAL = """
 % GENERAL
-moleculeFile = molecule.xyz
+moleculeFile = examples/benzene.xyz
 Z = 4
 """
 

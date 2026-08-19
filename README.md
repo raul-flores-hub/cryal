@@ -65,7 +65,7 @@ MACE model once already.
 python -m unittest discover -s tests -t .
 ```
 
-96 tests over the pure-Python core — no LAMMPS, no GPU, under a second, and no
+101 tests over the pure-Python core — no LAMMPS, no GPU, under a second, and no
 dependency beyond the standard library. One expected failure is deliberate: it
 records that `unwrap_molecule` cannot rebuild a molecule longer than half the
 cell, which is safe only because its single caller is off by default.
@@ -79,6 +79,14 @@ python run_cryal.py --resume         # continue an interrupted run
 cryal [INPUT.txt]                    # the same thing, once installed
 cryal --resume
 ```
+
+The repository ships a runnable example — `INPUT.txt`, `examples/benzene.xyz`
+and `in_v3.lammps` — chosen so that a clone can be exercised end to end without
+supplying anything. **The molecule you study is your own input and does not
+live here**: point `moleculeFile` at your own XYZ, and scale `minCellAxis` and
+the density window to it. `specOrder` in `INPUT.txt` and `pair_coeff`/`mass` in
+the LAMMPS script must list the same elements in the same order, which a test
+checks for the shipped pair.
 
 An interrupted run (power cut, walltime) resumes from `outputDir` without
 recomputing: the database is checkpointed after every evaluation, and the
@@ -117,6 +125,7 @@ starts from PyXtal alone.
 | `cryal/chpi_optimizer.py` | optional geometric CH–π contact optimizer |
 | `cryal/utils.py` | structure I/O, integrity and contact checks |
 | `cryal/tools/` | maintenance utilities (the ML-IAP model patcher) |
+| `examples/` | the example molecule (benzene) for the shipped `INPUT.txt` |
 | `pyproject.toml` | packaging metadata: dependency bounds, console scripts |
 
 ## Notes on the method

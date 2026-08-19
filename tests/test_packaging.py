@@ -159,6 +159,65 @@ class TestDependencies(unittest.TestCase):
             self.assertNotIn(name, self.declared)
 
 
+class TestShippedExample(unittest.TestCase):
+    """The repository ships a runnable example, and no molecule of its own.
+
+    The molecule under study belongs to whoever runs the search: it is input
+    data, not part of the tool, and it does not travel with the code. What is
+    shipped is a generic example (benzene) that anyone can run as-is.
+    """
+
+    def setUp(self):
+        with open(os.path.join(ROOT, "INPUT.txt")) as f:
+            self.input_txt = f.read()
+
+    def _value(self, key):
+        for line in self.input_txt.splitlines():
+            line = line.split("#")[0].strip()
+            if line.lower().startswith(key.lower()) and "=" in line:
+                return line.partition("=")[2].strip()
+        self.fail(f"{key} not found in INPUT.txt")
+
+    def test_the_example_molecule_exists_and_is_a_valid_xyz(self):
+        path = os.path.join(ROOT, "examples", "benzene.xyz")
+        self.assertTrue(os.path.exists(path))
+        with open(path) as f:
+            lines = [l for l in f.read().splitlines() if l.strip()]
+        declared = int(lines[0])
+        self.assertEqual(declared, len(lines) - 2)   # count, comment, atoms
+        self.assertEqual(declared, 12)
+
+    def test_the_example_input_points_at_the_example_molecule(self):
+        molecule = self._value("moleculeFile")
+        self.assertTrue(molecule.startswith("examples/"), molecule)
+        self.assertTrue(os.path.exists(os.path.join(ROOT, molecule)))
+
+    def test_the_user_molecule_is_kept_out_of_the_repository(self):
+        with open(os.path.join(ROOT, ".gitignore")) as f:
+            self.assertIn("molecule.xyz", f.read().split())
+
+    def test_specorder_matches_the_lammps_script(self):
+        # A mismatch here is a run that dies on the first structure: LAMMPS
+        # maps atom types to elements by position in both lists.
+        spec = self._value("specOrder").split()
+        with open(os.path.join(ROOT, self._value("lammpsInput"))) as f:
+            script = f.read()
+        for line in script.splitlines():
+            line = line.split("#")[0].strip()
+            if line.startswith("pair_coeff"):
+                self.assertEqual(line.split()[3:], spec)
+                break
+        else:
+            self.fail("no pair_coeff line in the LAMMPS script")
+
+    def test_the_masses_cover_every_atom_type(self):
+        spec = self._value("specOrder").split()
+        with open(os.path.join(ROOT, self._value("lammpsInput"))) as f:
+            masses = [l for l in f.read().splitlines()
+                      if l.split("#")[0].strip().startswith("mass ")]
+        self.assertEqual(len(masses), len(spec))
+
+
 class TestSourceDistribution(unittest.TestCase):
 
     def test_manifest_lists_files_that_exist(self):

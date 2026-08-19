@@ -15,8 +15,8 @@
 # =============================================================================
 
 % GENERAL
-moleculeFile          = molecule.xyz    # XYZ file of one molecule
-Z                     = 4              # molecules per unit cell
+moleculeFile          = examples/benzene.xyz   # XYZ file of one molecule (this is only the shipped example)
+Z                     = 4              # molecules per unit cell (benzene crystallizes Pbca, Z = 4)
 randomSeed            = 33936
 outputDir             = AL_results     # all output goes here
 logLevel              = INFO           # INFO or DEBUG
@@ -34,7 +34,7 @@ energySanityMax       = -100.0         # eV per cell; energies above this = fail
 % BACKEND_LAMMPS
 lammpsInput           = in_v3.lammps   # LAMMPS input script for relaxation
 lammpsCommand         = lmp -k on g 1 -sf kk -pk kokkos newton on neigh half   # Kokkos GPU build required by MACE-OFF mliap (forward_exchange)
-specOrder             = C H O N        # element order for LAMMPS atom types
+specOrder             = C H            # element order for LAMMPS atom types; must match pair_coeff in the LAMMPS script
 
 % BACKEND_ASE
 # Only read when energyBackend = ase. The calculator is named by dotted path,
@@ -83,7 +83,10 @@ densityMax            = 1.6            # g/cm³ — upper bound for auto estimat
 volumeExpansionFactors = 1.0 1.05 1.10 1.15 1.20 1.35 1.50
 
 % CELL
-minCellAxis           = 9.0            # Å — reject cells with any axis < this
+minCellAxis           = 5.0            # Å — reject cells with any axis < this
+                                       # Scale this with your molecule: 5 Å suits benzene
+                                       # (real cell 7.4 x 9.4 x 6.8 Å); a large planar
+                                       # molecule needs a much larger value.
 
 % BETA_MONOCLINIC
 # Beta angle distribution for monoclinic space groups — UNIFORM (blind).
