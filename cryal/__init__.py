@@ -22,8 +22,11 @@ Blind crystal structure prediction combining:
   - Active learning loop that discovers favorable regions autonomously
 
 Usage:
-    python run_cryal.py [INPUT.txt]
+    cryal [INPUT.txt]                # installed command
+    python run_cryal.py [INPUT.txt]  # from a checkout
 """
 
-__version__ = "1.0.0"
-__author__  = "CrYAL contributors"
+# 1.0.0 is the released version archived on Zenodo (DOI 10.5281/zenodo.21896733)
+# and cited by the article; this is the unreleased work that follows it.
+__version__ = "1.1.0.dev0"
+__author__  = "Raúl Rodolfo Flores Mena"

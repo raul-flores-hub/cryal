@@ -23,9 +23,8 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, "tools"))
-
-from patch_mliap_model import BUFFERS, apply_patch, default_output, missing_buffers  # noqa: E402
+from cryal.tools.patch_mliap_model import (BUFFERS, apply_patch,  # noqa: E402
+                                           default_output, missing_buffers)
 
 try:
     import torch

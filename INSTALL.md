@@ -10,7 +10,9 @@ which is what the Kokkos path needs.
 ```bash
 python -m venv cryal-env
 source cryal-env/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt      # the verified pins
+# or, to install CrYAL itself with dependency bounds instead of pins:
+pip install .
 ```
 
 That covers `import cryal`. Check it:
@@ -19,7 +21,7 @@ That covers `import cryal`. Check it:
 python -m unittest discover -s tests -t .
 ```
 
-80 tests, no LAMMPS, no GPU, under a second. One is an expected failure and is
+96 tests, no LAMMPS, no GPU, under a second. One is an expected failure and is
 supposed to be — it records a known limitation of `unwrap_molecule`.
 
 ## 2. LAMMPS with ML-IAP and Kokkos
@@ -79,6 +81,9 @@ help — the package is fine, the pickle is old. Patch the file instead:
 
 ```bash
 python tools/patch_mliap_model.py MACE-OFF23_small.model-mliap_lammps.pt
+
+# or, if CrYAL is installed rather than cloned:
+cryal-patch-mliap-model MACE-OFF23_small.model-mliap_lammps.pt
 ```
 
 This writes `..._v2.pt` beside it, leaves the original untouched, and changes no

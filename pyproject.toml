@@ -1,0 +1,70 @@
+# Packaging metadata for CrYAL.
+#
+# The dependency lists here and in requirements.txt answer two different
+# questions, on purpose. This file gives the *lower bounds* an installation
+# must satisfy, so that `pip install cryal` can resolve alongside whatever else
+# is in the environment. requirements.txt pins the *exact* versions this
+# workflow is verified on, for reproducing a run rather than for installing a
+# library. INSTALL.md, "Version drift", explains why the distinction matters
+# here: PyXtal in particular consumes the random stream differently across
+# releases, so a fixed seed reproduces space-group draws but not geometries.
+#
+# LAMMPS, torch and mace-torch are deliberately absent from both. LAMMPS runs
+# as an external process with its own embedded interpreter, and pulling torch
+# into this environment is what broke the MACE model once already.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cryal"
+dynamic = ["version"]
+description = "Blind crystal structure prediction by Bayesian active learning (reference implementation of BACH)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Raúl Rodolfo Flores Mena" }]
+keywords = [
+    "crystal structure prediction",
+    "Bayesian optimization",
+    "active learning",
+    "Gaussian process",
+    "machine-learned interatomic potential",
+    "MACE-OFF",
+    "molecular crystals",
+    "LAMMPS",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "ase>=3.22",
+    "pyxtal>=0.6",
+]
+
+[project.scripts]
+cryal = "cryal.cli:main"
+cryal-patch-mliap-model = "cryal.tools.patch_mliap_model:main"
+
+[project.urls]
+Homepage = "https://github.com/raul-flores-hub/cryal"
+Repository = "https://github.com/raul-flores-hub/cryal"
+"Archived release" = "https://doi.org/10.5281/zenodo.21896733"
+
+[tool.setuptools]
+# Listed explicitly rather than auto-discovered: `tests/` and `tools/` sit
+# next to the package and must not be installed as top-level modules.
+packages = ["cryal", "cryal.backends", "cryal.tools"]
+
+[tool.setuptools.dynamic]
+version = { attr = "cryal.__version__" }

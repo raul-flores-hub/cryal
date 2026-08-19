@@ -14,7 +14,7 @@
 # limitations under the License.
 
 """
-run_cryal.py — CrYAL entry point.
+run_cryal.py — CrYAL entry point, for running from a checkout.
 
 Usage:
     python run_cryal.py              # reads INPUT.txt in current directory
@@ -22,66 +22,17 @@ Usage:
     python run_cryal.py --resume     # continue an interrupted run (e.g. after
                                      # a power outage) from its output_dir
 
-CrYAL performs blind crystal structure prediction via active learning:
-  1. Random structure generation (no prior knowledge of experimental structure)
-  2. LAMMPS/MACE-OFF23 energy evaluation
-  3. Gaussian Process surrogate model
-  4. Expected Improvement guides generation toward promising regions
-  5. Iterates until convergence
+This is the invocation the article and the README document, and it works from
+a plain checkout with no installation. The command line itself lives in
+`cryal/cli.py`, so that `pip install cryal` also provides a `cryal` command;
+both run exactly the same code.
 
 See INPUT.txt for all configurable parameters.
 """
 
 import sys
-import os
-import traceback
 
-
-def main():
-    # --resume can be passed anywhere on the command line; it forces
-    # continuation of an existing run regardless of the INPUT.txt setting.
-    args = [a for a in sys.argv[1:] if a not in ("--resume", "-r")]
-    resume_flag = any(a in ("--resume", "-r") for a in sys.argv[1:])
-    input_file = args[0] if args else "INPUT.txt"
-
-    if not os.path.exists(input_file):
-        print(f"ERROR: Input file not found: {input_file}")
-        print("Usage: python run_cryal.py [INPUT.txt] [--resume]")
-        sys.exit(1)
-
-    print(f"CrYAL — Crystal Structure Prediction via Active Learning")
-    print(f"Reading configuration from: {input_file}")
-    print()
-
-    # Load configuration
-    try:
-        from cryal.config import load_config
-        cfg = load_config(input_file)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"Configuration error: {e}")
-        sys.exit(1)
-
-    if resume_flag:
-        cfg.resume = True
-        print("Resume requested (--resume): continuing from existing output_dir\n")
-
-    # Set random seeds
-    import random, numpy as np
-    random.seed(cfg.random_seed)
-    np.random.seed(cfg.random_seed)
-
-    # Run active learning
-    try:
-        from cryal.active_learning import run
-        run(cfg)
-    except KeyboardInterrupt:
-        print("\nRun interrupted by user.")
-        sys.exit(0)
-    except Exception:
-        print("\nFatal error during active learning run:")
-        traceback.print_exc()
-        sys.exit(1)
-
+from cryal.cli import main
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

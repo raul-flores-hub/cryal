@@ -1,0 +1,15 @@
+# What the source distribution carries beyond the package itself: the example
+# run (INPUT.txt, molecule.xyz, in_v3.lammps), the documentation, the citation
+# metadata, the verified pins, and the test suite -- an sdist should be enough
+# to reproduce a run and to check the code, not only to import it.
+include INPUT.txt
+include in_v3.lammps
+include molecule.xyz
+include requirements.txt
+include INSTALL.md
+include NOTICE
+include CITATION.cff
+include run_cryal.py
+include tools/patch_mliap_model.py
+recursive-include tests *.py
+global-exclude __pycache__/* *.py[cod]

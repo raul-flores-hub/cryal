@@ -38,13 +38,34 @@ fails with `AttributeError: 'MLIAPDataPy' object has no attribute 'forward_excha
 exported `.pt` model stops loading after a `mace-torch` upgrade, and how to check
 a rebuilt stack against a deterministic result before trusting its numbers.
 
+## Installing
+
+CrYAL runs from a checkout with no installation — that is how the run in the
+article was produced, and `python run_cryal.py` keeps working. To install it as
+a package instead:
+
+```bash
+pip install .                                          # from a checkout
+pip install git+https://github.com/raul-flores-hub/cryal
+```
+
+That provides two commands, `cryal` (the search) and `cryal-patch-mliap-model`
+(the model patcher described in [INSTALL.md](INSTALL.md)), and pulls the five
+Python dependencies as *lower bounds*. `requirements.txt` is the other half of
+the story: it pins the exact versions this workflow is verified on, which is
+what you want for reproducing a run rather than for installing a library.
+
+Neither installs LAMMPS, torch or mace-torch. The relaxation engine is external
+by design, and pulling torch into this environment is what broke the exported
+MACE model once already.
+
 ## Tests
 
 ```bash
 python -m unittest discover -s tests -t .
 ```
 
-80 tests over the pure-Python core — no LAMMPS, no GPU, under a second, and no
+96 tests over the pure-Python core — no LAMMPS, no GPU, under a second, and no
 dependency beyond the standard library. One expected failure is deliberate: it
 records that `unwrap_molecule` cannot rebuild a molecule longer than half the
 cell, which is safe only because its single caller is off by default.
@@ -52,8 +73,11 @@ cell, which is safe only because its single caller is off by default.
 ## Usage
 
 ```bash
-python run_cryal.py [INPUT.txt]      # INPUT.txt is the default
+python run_cryal.py [INPUT.txt]      # from a checkout; INPUT.txt is the default
 python run_cryal.py --resume         # continue an interrupted run
+
+cryal [INPUT.txt]                    # the same thing, once installed
+cryal --resume
 ```
 
 An interrupted run (power cut, walltime) resumes from `outputDir` without
@@ -82,7 +106,8 @@ starts from PyXtal alone.
 
 | path | role |
 |---|---|
-| `run_cryal.py` | entry point |
+| `run_cryal.py` | entry point for a checkout (wrapper over `cryal/cli.py`) |
+| `cryal/cli.py` | the command line, installed as `cryal` |
 | `cryal/config.py` | `INPUT.txt` parser → configuration dataclass |
 | `cryal/structure_gen.py` | symmetry-aware generation at a target volume |
 | `cryal/backends/` | selectable energy backends (`base.py` holds the contract) |
@@ -91,6 +116,8 @@ starts from PyXtal alone.
 | `cryal/active_learning.py` | the active-learning loop |
 | `cryal/chpi_optimizer.py` | optional geometric CH–π contact optimizer |
 | `cryal/utils.py` | structure I/O, integrity and contact checks |
+| `cryal/tools/` | maintenance utilities (the ML-IAP model patcher) |
+| `pyproject.toml` | packaging metadata: dependency bounds, console scripts |
 
 ## Notes on the method
 
