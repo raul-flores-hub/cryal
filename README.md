@@ -122,6 +122,7 @@ starts from PyXtal alone.
 | `cryal/lammps_runner.py` | compatibility shim for the pre-backends API |
 | `cryal/gp_model.py` | GP surrogate and Expected-Improvement acquisition |
 | `cryal/active_learning.py` | the active-learning loop |
+| `cryal/backends/uma.py` | UMA as a named backend, with its mandatory task |
 | `cryal/parallel.py` | distributing a cycle's candidates over several machines |
 | `cryal/_remote_worker.py` | what runs on a worker: one candidate, one verdict |
 | `cryal/chpi_optimizer.py` | optional geometric CH–π contact optimizer |
@@ -162,6 +163,7 @@ and returns its energy:
 |---|---|
 | `lammps_mace` (default) | an external LAMMPS process driving MACE-OFF23 through `mliap-unified` — the backend used for the published run |
 | `ase` | in-process relaxation with any ASE calculator, named by dotted path |
+| `uma` | in-process relaxation with Meta's UMA (`fairchem-core`) |
 
 Omitting the key means `lammps_mace`, so every input written before backends
 existed — including the one archived with `v1.0.0` — keeps its exact meaning.
@@ -187,6 +189,34 @@ script used in the article, so it explores a smaller basin around each
 candidate. And energies are comparable only within one backend and one
 potential: never merge databases built with different engines, and keep the
 backend you started with when resuming a run.
+
+### UMA
+
+UMA is an ASE calculator, but it has a backend of its own because it cannot be
+named by a dotted path — its one-call constructor is a classmethod — and
+because the factory every user would otherwise write would have to exist, under
+the same importable name, on every machine of a distributed run.
+
+```
+energyBackend = uma
+
+% BACKEND_UMA
+umaModel  = uma-s-1p1
+umaTask   = omc
+umaDevice = cuda
+```
+
+`umaTask` is mandatory and has no default. Each UMA head was trained on a
+different domain and carries its own zero of energy: for one periodic C50Au4
+cell, `omat` returns −466.55 eV and `oc20` −447.06 eV. Energies from two heads
+are not comparable and nothing downstream would reveal the mix, so CrYAL refuses
+to guess. `omc` is the organic-molecular-crystal head.
+
+Install is `pip install fairchem-core` plus a Hugging Face token; it is
+**not** the ORCA external-tools installation, which serves gradients to ORCA
+over a Flask port and cannot do periodic systems at all. See INSTALL.md §5,
+including which interpreter to point at when a machine already has UMA
+installed for ORCA.
 
 ## Running on several machines
 

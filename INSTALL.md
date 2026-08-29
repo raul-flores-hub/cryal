@@ -104,6 +104,101 @@ noise rather than a change of model.
 
 Do not use an MD-annealed protocol for this check: it is not deterministic.
 
+## 5. UMA (optional, for `energyBackend = uma`)
+
+CrYAL needs **only the Python package**:
+
+```bash
+pip install fairchem-core
+```
+
+into the same interpreter that runs CrYAL. It pulls `torch` and `ase`. Then a
+Hugging Face token once, because the UMA checkpoints are a gated repository:
+
+```bash
+huggingface-cli login          # or: export HF_TOKEN=...
+```
+
+The first run downloads `uma-s-1p1` (1.17 GB) into `~/.cache/fairchem`.
+
+### What CrYAL does *not* need — read this if UMA is already on the machine
+
+UMA is commonly installed for a different purpose: to serve gradients to **ORCA**
+through `orca-external-tools`, which runs a Flask server (`server.py`) that ORCA
+reaches with `client.py` and an `extopt` block. If a machine here already has
+UMA, it is probably that installation.
+
+**That setup is a superset, not a prerequisite.** CrYAL drives UMA in this
+process through ASE and uses neither the server nor the client. Two practical
+consequences:
+
+- An existing ORCA-oriented environment **works for CrYAL as it is** — point
+  the run at its interpreter. Nothing has to be started, and no port is used.
+- A fresh install for CrYAL alone should be the one-line `pip install` above.
+  Do not build the ORCA route for this.
+
+And one that is not optional to know: **the ORCA route cannot do periodic
+systems at all**, because ORCA has no periodic boundary conditions. For a
+crystal, ASE is the only route.
+
+### The trap: which interpreter
+
+An ORCA-oriented install often lives on a mounted volume, beside a *second*
+directory of the same name that holds only the Flask server. On the reference
+network, one machine has both:
+
+```
+.../orca-external-tools/orca-uma/bin/python   <- 7.5 GB, has torch + fairchem
+.../orca-uma/bin/python                       <- 22 MB, only Flask
+```
+
+The second imports fine and then fails at the first evaluation with
+`ModuleNotFoundError: No module named 'torch'`. Check before configuring:
+
+```bash
+<interpreter> -c "import fairchem.core, torch; print(torch.cuda.is_available())"
+```
+
+Note also that a search of `$HOME` alone finds neither.
+
+### Configuring it
+
+```
+energyBackend = uma
+
+% BACKEND_UMA
+umaModel  = uma-s-1p1
+umaTask   = omc
+umaDevice = cuda
+```
+
+`umaTask` is **mandatory and has no default.** Each UMA head was trained on a
+different domain and each carries its own zero of energy: for one periodic
+C50Au4 cell, `omat` returns −466.55 eV and `oc20` −447.06 eV. Energies from two
+heads are not comparable, and nothing downstream would reveal a run that mixed
+them. `omc` is the organic-molecular-crystal head, which is the one for CSP.
+
+The relaxation is configured by the shared `aseOptimizer` / `aseFmax` /
+`aseMaxSteps` / `aseRelaxCell` keys. Note that `aseMaxSteps` matters more here
+than with MACE: on a set of 19 crystal candidates MACE-OFF converged in about 25
+steps and UMA needed 39–582 from the same geometries, so a budget tuned for one
+silently fails structures with the other.
+
+### Versions across machines
+
+`fairchem` moves quickly and the machines on one network drift apart. Checked
+here: 2.13.0 and 2.21.0 returned −466.551008 and −466.551014 eV for the same
+periodic cell with `uma-s-1p1` and `omat` — 6 µeV, GPU noise rather than a
+version effect. That agreement is evidence for one system and one head, not a
+general licence; a newer install may also offer checkpoints (`uma-s-1p2`) and
+heads (`oc25`) that an older one does not. Re-check with a single point
+whenever the model, the head or the fairchem version changes.
+
+For a distributed run, prefer **copying** the cached checkpoint between machines
+over downloading it on each: the Hugging Face blob is named by its sha256, so a
+copy is provably the same weights, while a fresh download can pick up a
+different revision without saying so.
+
 ## Version drift
 
 The pins in `requirements.txt` are the versions verified today, not the ones

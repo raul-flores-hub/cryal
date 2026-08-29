@@ -60,6 +60,7 @@ def get_backend(cfg, logger=None) -> EnergyBackend:
 # Importing the modules is what registers them.
 from . import lammps_mace   # noqa: E402,F401
 from . import ase_calculator  # noqa: E402,F401
+from . import uma           # noqa: E402,F401
 
 __all__ = ["EnergyBackend", "get_reference_bonds", "check_molecular_integrity",
            "register", "available_backends", "backend_class", "get_backend"]

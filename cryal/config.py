@@ -177,6 +177,14 @@ class Config:
     ase_max_steps:       int   = 500
     ase_relax_cell:      bool  = True
 
+    # --- BACKEND: uma ---
+    # UMA carries a task, and each head has its own zero of energy. There is
+    # deliberately no default for it: see cryal/backends/uma.py.
+    uma_model:           str  = "uma-s-1p1"
+    uma_task:            str  = ""
+    uma_device:          str  = "cuda"
+    uma_inference_settings: str = "default"
+
     # --- ACTIVE LEARNING ---
     num_cycles:          int   = 10
     initial_structures:  int   = 100
@@ -327,6 +335,13 @@ def load_config(filepath: str = "INPUT.txt") -> Config:
     cfg.ase_fmax              = _float(raw, "asefmax", cfg.ase_fmax)
     cfg.ase_max_steps         = _int(raw, "asemaxsteps", cfg.ase_max_steps)
     cfg.ase_relax_cell        = _bool(raw, "aserelaxcell", cfg.ase_relax_cell)
+
+    # BACKEND: uma
+    cfg.uma_model   = _str(raw, "umamodel", cfg.uma_model)
+    cfg.uma_task    = _str(raw, "umatask", cfg.uma_task)
+    cfg.uma_device  = _str(raw, "umadevice", cfg.uma_device)
+    cfg.uma_inference_settings = _str(raw, "umainferencesettings",
+                                      cfg.uma_inference_settings)
 
     # ACTIVE LEARNING
     cfg.num_cycles            = _int(raw, "numcycles", cfg.num_cycles)
