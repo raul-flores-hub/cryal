@@ -59,6 +59,7 @@ from .utils import (setup_logger, get_molecules_robust,
                     compute_density, cell_params_dict, check_bond_integrity)
 from .structure_gen import generate_structures, load_seeds
 from .backends import get_backend, get_reference_bonds
+from .parallel import build_pool
 from .gp_model import GPSurrogate, maximize_ei, gp_report
 
 try:
@@ -163,17 +164,78 @@ def _apply_chpi(struct_list, mol_ring_info, ch_pairs, mol_size, cfg, logger):
     return optimized
 
 
+def _step_name(cycle: int, idx: int) -> str:
+    return f"cycle{cycle:03d}_struct{idx:05d}"
+
+
+def _record_result(s, relaxed, energy, cfg, cycle: int, step_name: str,
+                   db: CrystalDatabase, logger) -> bool:
+    """
+    Turn one successful evaluation into a database record. Returns False for a
+    candidate that was rejected, so the caller can count it.
+
+    This is the whole of what a result means, and both the serial loop and the
+    parallel pool go through it: distributing the relaxations must not change
+    what gets written down about them.
+    """
+    if relaxed is None or energy is None:
+        logger.info(f"    → FAILED (relaxation or integrity)")
+        return False
+
+    cp   = cell_params_dict(relaxed)
+    rho  = compute_density(relaxed, cfg.Z, cfg.mol_weight)
+    rec_id = len(db) + 1
+
+    # Save CIF
+    cif_path = os.path.join(db.cif_dir, f"{step_name}.cif")
+    relaxed.wrap()
+    write(cif_path, relaxed)
+
+    record = {
+        'id':           rec_id,
+        'cycle':        cycle,
+        'source':       s.get('source', 'unknown'),
+        'space_group':  s.get('space_group'),
+        'n_chpi':       s.get('n_chpi_contacts', None),
+        'energy':       round(energy, 6),
+        'density':      round(rho, 4),
+        'volume':       round(cp['volume'], 2),
+        'a':            round(cp['a'], 4),
+        'b':            round(cp['b'], 4),
+        'c':            round(cp['c'], 4),
+        'alpha':        round(cp['alpha'], 3),
+        'beta':         round(cp['beta'], 3),
+        'gamma':        round(cp['gamma'], 3),
+        'cif_path':     cif_path,
+    }
+    db.add(record)
+    db.save()
+
+    logger.info(f"    → E={energy:.4f} eV  rho={rho:.3f} g/cm³  "
+                f"beta={cp['beta']:.1f}°  V={cp['volume']:.0f} Å³")
+    return True
+
+
 def _evaluate_batch(struct_list, cfg, backend, cycle: int, batch_start: int,
                     ref_bonds, mol_size: int,
-                    db: CrystalDatabase, logger) -> int:
+                    db: CrystalDatabase, logger, pool=None) -> int:
     """
     Evaluate a batch of structures with the energy backend and add the results
     to the database. Returns the number of successful evaluations.
+
+    With a WorkerPool the candidates are relaxed concurrently, possibly on
+    other machines, but they are still recorded in candidate order — so the
+    database a parallel run produces is the one a serial run would have
+    produced for the same structures.
     """
+    if pool is not None:
+        return _evaluate_batch_parallel(struct_list, cfg, cycle, batch_start,
+                                        ref_bonds, mol_size, db, logger, pool)
+
     n_ok = 0
     for i, s in enumerate(struct_list):
         idx       = batch_start + i
-        step_name = f"cycle{cycle:03d}_struct{idx:05d}"
+        step_name = _step_name(cycle, idx)
         step_dir  = os.path.join(cfg.output_dir, "steps", step_name)
 
         logger.info(f"  Evaluating {step_name}  source={s.get('source','?')}  "
@@ -182,43 +244,43 @@ def _evaluate_batch(struct_list, cfg, backend, cycle: int, batch_start: int,
         relaxed, energy = backend.evaluate(
             s['atoms'], step_dir, ref_bonds, mol_size, logger=logger)
 
-        if relaxed is None:
-            logger.info(f"    → FAILED (relaxation or integrity)")
-            continue
+        if _record_result(s, relaxed, energy, cfg, cycle, step_name, db, logger):
+            n_ok += 1
 
-        cp   = cell_params_dict(relaxed)
-        rho  = compute_density(relaxed, cfg.Z, cfg.mol_weight)
-        rec_id = len(db) + 1
+    return n_ok
 
-        # Save CIF
-        cif_path = os.path.join(db.cif_dir, f"{step_name}.cif")
-        relaxed.wrap()
-        write(cif_path, relaxed)
 
-        record = {
-            'id':           rec_id,
-            'cycle':        cycle,
-            'source':       s.get('source', 'unknown'),
-            'space_group':  s.get('space_group'),
-            'n_chpi':       s.get('n_chpi_contacts', None),
-            'energy':       round(energy, 6),
-            'density':      round(rho, 4),
-            'volume':       round(cp['volume'], 2),
-            'a':            round(cp['a'], 4),
-            'b':            round(cp['b'], 4),
-            'c':            round(cp['c'], 4),
-            'alpha':        round(cp['alpha'], 3),
-            'beta':         round(cp['beta'], 3),
-            'gamma':        round(cp['gamma'], 3),
-            'cif_path':     cif_path,
-        }
-        db.add(record)
-        db.save()
-        n_ok += 1
+def _evaluate_batch_parallel(struct_list, cfg, cycle: int, batch_start: int,
+                             ref_bonds, mol_size: int,
+                             db: CrystalDatabase, logger, pool) -> int:
+    """Relax a batch across the pool's slots, then record it in order."""
+    tasks = []
+    for i, s in enumerate(struct_list):
+        idx       = batch_start + i
+        step_name = _step_name(cycle, idx)
+        step_dir  = os.path.join(cfg.output_dir, "steps", step_name)
+        tasks.append((idx, step_dir, s['atoms']))
 
-        logger.info(f"    → E={energy:.4f} eV  rho={rho:.3f} g/cm³  "
-                    f"beta={cp['beta']:.1f}°  V={cp['volume']:.0f} Å³")
+    logger.info(f"  Evaluating {len(tasks)} candidates on {pool.n_slots} slots "
+                f"({pool.describe()})")
+    t0 = time.time()
+    results = pool.evaluate_all(tasks, ref_bonds, mol_size)
+    elapsed = time.time() - t0
 
+    n_ok = 0
+    by_index = {index: (relaxed, energy) for index, relaxed, energy in results}
+    for i, s in enumerate(struct_list):
+        idx       = batch_start + i
+        step_name = _step_name(cycle, idx)
+        relaxed, energy = by_index.get(idx, (None, None))
+        logger.info(f"  {step_name}  source={s.get('source','?')}  "
+                    f"SG={s.get('space_group','?')}")
+        if _record_result(s, relaxed, energy, cfg, cycle, step_name, db, logger):
+            n_ok += 1
+
+    rate = elapsed / len(tasks) if tasks else 0.0
+    logger.info(f"  Batch done in {elapsed/60:.1f} min "
+                f"({rate:.1f} s/candidate wall-clock, {n_ok}/{len(tasks)} kept)")
     return n_ok
 
 
@@ -309,157 +371,170 @@ def run(cfg: Config):
     if ref_bonds:
         logger.info(f"Integrity check: {len(ref_bonds)} reference bonds")
 
-    # CH-pi setup
-    mol_ring_info = ch_pairs = None
-    if cfg.use_chpi_optimizer and _CHPI_AVAILABLE:
-        mol_ring_info, ch_pairs = analyze_molecule(cfg.molecule_file, logger)
-        logger.info(f"CH-pi optimizer: ON  "
-                    f"({len(mol_ring_info)} rings, {len(ch_pairs)} C-H pairs)")
-    elif cfg.use_chpi_optimizer:
-        logger.warning("CH-pi optimizer requested but RDKit not available — disabled")
+    # The machines this run's candidates will be relaxed on. None means
+    # serial evaluation here, which is what every input written before
+    # this feature existed asks for.
+    pool = build_pool(cfg, backend, logger)
 
-    gp = GPSurrogate(kernel_type=cfg.gp_kernel, n_restarts=cfg.gp_n_restarts)
-    suggestions = None
+    try:
 
-    # ====================================================================
-    # Cycle 0: Initialization  (skipped when resuming)
-    # ====================================================================
-    if not resume:
-        logger.info("=" * 60)
-        logger.info("CYCLE 0 — Initialization (blind random generation)")
-        logger.info("=" * 60)
-        t0 = time.time()
+        # CH-pi setup
+        mol_ring_info = ch_pairs = None
+        if cfg.use_chpi_optimizer and _CHPI_AVAILABLE:
+            mol_ring_info, ch_pairs = analyze_molecule(cfg.molecule_file, logger)
+            logger.info(f"CH-pi optimizer: ON  "
+                        f"({len(mol_ring_info)} rings, {len(ch_pairs)} C-H pairs)")
+        elif cfg.use_chpi_optimizer:
+            logger.warning("CH-pi optimizer requested but RDKit not available — disabled")
 
-        # Generate random structures
-        logger.info(f"Generating {cfg.initial_structures} random structures...")
-        structs = generate_structures(cfg.molecule_file, cfg, cfg.initial_structures,
-                                      suggestions=None, logger=logger)
+        gp = GPSurrogate(kernel_type=cfg.gp_kernel, n_restarts=cfg.gp_n_restarts)
+        suggestions = None
 
-        # Load seeds
-        seeds = load_seeds(cfg, mol_size, logger)
-        if seeds:
-            logger.info(f"Loaded {len(seeds)} seed/perturbation structures")
-            structs.extend(seeds)
+        # ====================================================================
+        # Cycle 0: Initialization  (skipped when resuming)
+        # ====================================================================
+        if not resume:
+            logger.info("=" * 60)
+            logger.info("CYCLE 0 — Initialization (blind random generation)")
+            logger.info("=" * 60)
+            t0 = time.time()
 
-        logger.info(f"Total structures to evaluate: {len(structs)}")
+            # Generate random structures
+            logger.info(f"Generating {cfg.initial_structures} random structures...")
+            structs = generate_structures(cfg.molecule_file, cfg, cfg.initial_structures,
+                                          suggestions=None, logger=logger)
 
-        # Optional CH-pi optimization
-        structs = _apply_chpi(structs, mol_ring_info, ch_pairs, mol_size, cfg, logger)
+            # Load seeds
+            seeds = load_seeds(cfg, mol_size, logger)
+            if seeds:
+                logger.info(f"Loaded {len(seeds)} seed/perturbation structures")
+                structs.extend(seeds)
 
-        # Evaluate
-        n_ok = _evaluate_batch(structs, cfg, backend, cycle=0, batch_start=0,
-                               ref_bonds=ref_bonds, mol_size=mol_size,
-                               db=db, logger=logger)
+            logger.info(f"Total structures to evaluate: {len(structs)}")
 
-        logger.info(f"Cycle 0 complete: {n_ok}/{len(structs)} OK  "
-                    f"[{time.time()-t0:.0f}s]")
-        if db.best_energy() is not None:
-            br = db.best_record()
-            logger.info(f"Best so far: E={br['energy']:.4f} eV  "
-                        f"rho={br['density']:.3f}  beta={br['beta']:.1f}°")
+            # Optional CH-pi optimization
+            structs = _apply_chpi(structs, mol_ring_info, ch_pairs, mol_size, cfg, logger)
 
-    # ====================================================================
-    # Cycles start_cycle .. num_cycles  (start_cycle = 1 unless resuming)
-    # ====================================================================
-    for cycle in range(start_cycle, cfg.num_cycles + 1):
-        logger.info("=" * 60)
-        logger.info(f"CYCLE {cycle}/{cfg.num_cycles} — Active Learning")
-        logger.info("=" * 60)
-        t0 = time.time()
+            # Evaluate
+            n_ok = _evaluate_batch(structs, cfg, backend, cycle=0, batch_start=0,
+                                   ref_bonds=ref_bonds, mol_size=mol_size,
+                                   db=db, logger=logger, pool=pool)
 
-        # Early stopping
-        best_now = db.best_energy()
-        if best_energy_prev is not None and best_now is not None:
-            if abs(best_now - best_energy_prev) < 1e-4:
-                no_improve_count += 1
-                logger.info(f"No improvement ({no_improve_count}/"
-                             f"{cfg.max_no_improve_cycles})")
-                if no_improve_count >= cfg.max_no_improve_cycles:
-                    logger.info("Convergence criterion met — stopping early")
-                    break
-            else:
-                no_improve_count = 0
-        best_energy_prev = best_now
+            logger.info(f"Cycle 0 complete: {n_ok}/{len(structs)} OK  "
+                        f"[{time.time()-t0:.0f}s]")
+            if db.best_energy() is not None:
+                br = db.best_record()
+                logger.info(f"Best so far: E={br['energy']:.4f} eV  "
+                            f"rho={br['density']:.3f}  beta={br['beta']:.1f}°")
 
-        # --- Train GP ---
-        if not cfg.use_gp:
-            logger.info("GP disabled (useGP = false) — candidates generated "
-                        "without EI bias")
-            suggestions = None
-        elif len(db) >= 5:
-            logger.info(f"Training GP on {len(db)} structures...")
-            try:
-                gp.fit(db.records)
-                suggestions = maximize_ei(gp, db.records, cfg, rng)
-                gp_report(gp, suggestions, db.best_energy(), logger)
-                # Save GP suggestions for this cycle
-                _save_suggestions(suggestions, cycle, cfg.output_dir)
-            except Exception as e:
-                logger.warning(f"GP training failed: {e} — using random generation")
+        # ====================================================================
+        # Cycles start_cycle .. num_cycles  (start_cycle = 1 unless resuming)
+        # ====================================================================
+        for cycle in range(start_cycle, cfg.num_cycles + 1):
+            logger.info("=" * 60)
+            logger.info(f"CYCLE {cycle}/{cfg.num_cycles} — Active Learning")
+            logger.info("=" * 60)
+            t0 = time.time()
+
+            # Early stopping
+            best_now = db.best_energy()
+            if best_energy_prev is not None and best_now is not None:
+                if abs(best_now - best_energy_prev) < 1e-4:
+                    no_improve_count += 1
+                    logger.info(f"No improvement ({no_improve_count}/"
+                                 f"{cfg.max_no_improve_cycles})")
+                    if no_improve_count >= cfg.max_no_improve_cycles:
+                        logger.info("Convergence criterion met — stopping early")
+                        break
+                else:
+                    no_improve_count = 0
+            best_energy_prev = best_now
+
+            # --- Train GP ---
+            if not cfg.use_gp:
+                logger.info("GP disabled (useGP = false) — candidates generated "
+                            "without EI bias")
                 suggestions = None
-        else:
-            logger.info("Not enough data for GP — random generation")
-            suggestions = None
+            elif len(db) >= 5:
+                logger.info(f"Training GP on {len(db)} structures...")
+                try:
+                    gp.fit(db.records)
+                    suggestions = maximize_ei(gp, db.records, cfg, rng)
+                    gp_report(gp, suggestions, db.best_energy(), logger)
+                    # Save GP suggestions for this cycle
+                    _save_suggestions(suggestions, cycle, cfg.output_dir)
+                except Exception as e:
+                    logger.warning(f"GP training failed: {e} — using random generation")
+                    suggestions = None
+            else:
+                logger.info("Not enough data for GP — random generation")
+                suggestions = None
 
-        # --- Generate new structures ---
-        logger.info(f"Generating {cfg.structures_per_cycle} structures "
-                    f"({'half biased' if suggestions else 'random'})...")
-        structs = generate_structures(cfg.molecule_file, cfg,
-                                      cfg.structures_per_cycle,
-                                      suggestions=suggestions, logger=logger)
+            # --- Generate new structures ---
+            logger.info(f"Generating {cfg.structures_per_cycle} structures "
+                        f"({'half biased' if suggestions else 'random'})...")
+            structs = generate_structures(cfg.molecule_file, cfg,
+                                          cfg.structures_per_cycle,
+                                          suggestions=suggestions, logger=logger)
 
-        # Use top-N from database as additional seeds for this cycle
-        pool_cifs = _export_pool(db, cfg, cycle)
-        if pool_cifs:
-            cfg_tmp = _config_with_seeds(cfg, pool_cifs)
-            pool_structs = load_seeds(cfg_tmp, mol_size, logger)
-            if pool_structs:
-                logger.info(f"Pool seeds: {len(pool_structs)} perturbations")
-                structs.extend(pool_structs[:cfg.structures_per_cycle // 4])
+            # Use top-N from database as additional seeds for this cycle
+            pool_cifs = _export_pool(db, cfg, cycle)
+            if pool_cifs:
+                cfg_tmp = _config_with_seeds(cfg, pool_cifs)
+                pool_structs = load_seeds(cfg_tmp, mol_size, logger)
+                if pool_structs:
+                    logger.info(f"Pool seeds: {len(pool_structs)} perturbations")
+                    structs.extend(pool_structs[:cfg.structures_per_cycle // 4])
 
-        # CH-pi
-        structs = _apply_chpi(structs, mol_ring_info, ch_pairs, mol_size, cfg, logger)
+            # CH-pi
+            structs = _apply_chpi(structs, mol_ring_info, ch_pairs, mol_size, cfg, logger)
 
-        # Evaluate
-        batch_start = sum(1 for r in db.records if r['cycle'] < cycle)
-        n_ok = _evaluate_batch(structs, cfg, backend, cycle=cycle,
-                               batch_start=batch_start,
-                               ref_bonds=ref_bonds, mol_size=mol_size,
-                               db=db, logger=logger)
+            # Evaluate
+            batch_start = sum(1 for r in db.records if r['cycle'] < cycle)
+            n_ok = _evaluate_batch(structs, cfg, backend, cycle=cycle,
+                                   batch_start=batch_start,
+                                   ref_bonds=ref_bonds, mol_size=mol_size,
+                                   db=db, logger=logger, pool=pool)
 
-        logger.info(f"Cycle {cycle} complete: {n_ok}/{len(structs)} OK  "
-                    f"[{time.time()-t0:.0f}s]")
+            logger.info(f"Cycle {cycle} complete: {n_ok}/{len(structs)} OK  "
+                        f"[{time.time()-t0:.0f}s]")
 
-        if db.best_energy() is not None:
-            br = db.best_record()
-            logger.info(f"Best so far: E={br['energy']:.4f} eV  "
-                        f"rho={br['density']:.3f}  beta={br['beta']:.1f}°  "
-                        f"V={br['volume']:.0f} Å³  (cycle {br['cycle']})")
+            if db.best_energy() is not None:
+                br = db.best_record()
+                logger.info(f"Best so far: E={br['energy']:.4f} eV  "
+                            f"rho={br['density']:.3f}  beta={br['beta']:.1f}°  "
+                            f"V={br['volume']:.0f} Å³  (cycle {br['cycle']})")
 
-        # Save per-cycle report
-        _save_cycle_report(db, cycle, cfg.output_dir)
+            # Save per-cycle report
+            _save_cycle_report(db, cycle, cfg.output_dir)
 
-    # ====================================================================
-    # Final summary
-    # ====================================================================
-    logger.info("=" * 60)
-    logger.info("ACTIVE LEARNING COMPLETE")
-    logger.info("=" * 60)
-    logger.info(f"Total structures evaluated: {len(db)}")
+        # ====================================================================
+        # Final summary
+        # ====================================================================
+        logger.info("=" * 60)
+        logger.info("ACTIVE LEARNING COMPLETE")
+        logger.info("=" * 60)
+        logger.info(f"Total structures evaluated: {len(db)}")
 
-    top5 = db.top_n(5)
-    logger.info("Top 5 structures by energy:")
-    logger.info(f"  {'#':>3} {'E(eV)':>14} {'rho':>8} {'beta':>8} "
-                f"{'V':>8} {'cycle':>6} source")
-    for rank, r in enumerate(top5, 1):
-        logger.info(f"  {rank:>3} {r['energy']:>14.4f} {r['density']:>8.3f} "
-                    f"{r['beta']:>8.1f} {r['volume']:>8.0f} "
-                    f"{r['cycle']:>6}  {r['source']}")
+        top5 = db.top_n(5)
+        logger.info("Top 5 structures by energy:")
+        logger.info(f"  {'#':>3} {'E(eV)':>14} {'rho':>8} {'beta':>8} "
+                    f"{'V':>8} {'cycle':>6} source")
+        for rank, r in enumerate(top5, 1):
+            logger.info(f"  {rank:>3} {r['energy']:>14.4f} {r['density']:>8.3f} "
+                        f"{r['beta']:>8.1f} {r['volume']:>8.0f} "
+                        f"{r['cycle']:>6}  {r['source']}")
 
-    _save_final_report(db, gp, cfg)
-    logger.info(f"\nResults in: {cfg.output_dir}/")
-    logger.info(f"Database:   {cfg.output_dir}/database.json")
-    logger.info(f"Best CIF:   {top5[0]['cif_path']}")
+        _save_final_report(db, gp, cfg)
+        logger.info(f"\nResults in: {cfg.output_dir}/")
+        logger.info(f"Database:   {cfg.output_dir}/database.json")
+        logger.info(f"Best CIF:   {top5[0]['cif_path']}")
+
+    finally:
+        # Each candidate already removes its own remote directory; this
+        # takes away the per-run one, and says so if it could not.
+        if pool is not None:
+            pool.close()
 
 
 # ---------------------------------------------------------------------------

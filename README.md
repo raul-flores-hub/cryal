@@ -122,6 +122,8 @@ starts from PyXtal alone.
 | `cryal/lammps_runner.py` | compatibility shim for the pre-backends API |
 | `cryal/gp_model.py` | GP surrogate and Expected-Improvement acquisition |
 | `cryal/active_learning.py` | the active-learning loop |
+| `cryal/parallel.py` | distributing a cycle's candidates over several machines |
+| `cryal/_remote_worker.py` | what runs on a worker: one candidate, one verdict |
 | `cryal/chpi_optimizer.py` | optional geometric CH–π contact optimizer |
 | `cryal/utils.py` | structure I/O, integrity and contact checks |
 | `cryal/tools/` | maintenance utilities (the ML-IAP model patcher) |
@@ -185,6 +187,71 @@ script used in the article, so it explores a smaller basin around each
 candidate. And energies are comparable only within one backend and one
 potential: never merge databases built with different engines, and keep the
 backend you started with when resuming a run.
+
+## Running on several machines
+
+Relaxing one candidate says nothing about relaxing another, and the
+relaxations are the whole cost of a run. `useParallel` spreads a cycle's
+candidates over the Linux machines on your network that you can already reach
+by passwordless `ssh`:
+
+```
+% PARALLEL
+useParallel        = true
+parallelWorkers    = raul@192.168.1.11:4  raul@192.168.1.12:2
+parallelLocalSlots = 2
+```
+
+Each entry is `user@host:slots`, where *slots* is how many candidates that
+machine relaxes at once — four on the workstation, two on the older box, two
+here. Machines take candidates from a shared queue rather than being handed a
+fixed share, so a slow one simply takes fewer and no machine waits for the
+slowest to finish the cycle.
+
+If the interpreter that can `import cryal` on a worker is not the `python3` on
+its `PATH` — on a machine set up for MACE it usually is not — name it as a
+third field:
+
+```
+parallelWorkers = raul@192.168.1.11:4:/home/raul/mace-env/bin/python
+```
+
+Every worker needs CrYAL and its dependencies installed, and the engine
+(`lmp`) reachable from a non-interactive `ssh` session; note that `~/.bashrc`
+is not read by one, so `lammpsCommand` may need an absolute path.
+
+Each machine is checked before the run starts — reachable, right interpreter,
+engine on the PATH, and the selected backend's own `validate_config()` run over
+there against the configuration it will be sent. That last check is not
+belt-and-braces: a worker that cannot import the calculator answers *every*
+candidate with a rejection, and a rejection is a legitimate verdict, so nothing
+would ever retire that machine. It would keep taking a share of every cycle and
+returning nothing, and the run would look merely unlucky. A machine that fails
+any check is reported with the reason and dropped.
+
+A machine that dies mid-run costs the candidates it was holding at most: those
+go back on the queue, and after a few consecutive failures the machine is
+dropped and the run continues on what is left.
+
+What this does **not** do is split a single relaxation across machines, and it
+is deliberately not a backend: a backend turns one structure into one energy,
+and there is nothing inside that to distribute.
+
+The results are the point, so three things are fixed. Every candidate is
+evaluated exactly once — nothing is broadcast to several machines and reduced.
+Every candidate goes through the same `evaluate()` with the same
+configuration, which is sent from here rather than reconstructed there, so the
+pre-relaxation gate, the energy bound and the integrity check are the ones you
+configured. And records enter the database in candidate order, not completion
+order, so a distributed run and a serial one produce the same database for the
+same structures.
+
+One limit worth knowing: `parallelLocalSlots > 1` only helps a backend that
+can run twice at once in this process. `lammps_mace` can, because each
+relaxation is a separate `lmp` process. The `ase` backend cannot — one
+calculator instance is shared by every relaxation — so the local slots are
+clamped to one and you are told why. Remote workers are unaffected either way:
+those are separate processes on separate machines.
 
 ## Extending CrYAL
 

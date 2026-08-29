@@ -110,6 +110,18 @@ class EnergyBackend(ABC):
     name: str = ""
     aliases: tuple = ()
 
+    #: May two evaluate() calls run at the same time in this process?
+    #:
+    #: Only a backend that keeps no mutable state between calls can say yes.
+    #: The LAMMPS backend can: every call is a fresh subprocess whose whole
+    #: world is its step directory. An in-process calculator usually cannot,
+    #: because it holds one model instance whose `atoms` and `results` two
+    #: threads would overwrite for each other — and because a second thread
+    #: would be queueing on the same GPU anyway. cryal.parallel refuses to
+    #: open more than one local slot on a backend that leaves this False,
+    #: rather than letting the corruption happen quietly.
+    thread_safe: bool = False
+
     def __init__(self, cfg, logger=None):
         self.cfg = cfg
         self.logger = logger
@@ -124,6 +136,35 @@ class EnergyBackend(ABC):
         misconfigured run dies in the first second instead of the first cycle.
         """
         return None
+
+    @classmethod
+    def job_files(cls, cfg) -> dict:
+        """
+        Files a machine other than this one needs before it can run relax().
+
+        Maps a Config attribute holding a path to that path. cryal.parallel
+        copies each file to the remote worker once per run and rewrites the
+        attribute in the worker's copy of the configuration to point at it, so
+        the remote engine reads the same input script as the local one instead
+        of whatever happens to sit at that path over there.
+
+        Returns {} for a backend that needs nothing shipped: the ASE backend
+        names its calculator by dotted path, and model weights are the
+        worker's own installation to provide.
+        """
+        return {}
+
+    @classmethod
+    def required_commands(cls, cfg) -> list:
+        """
+        External programs that must be on a worker's PATH for relax() to work.
+
+        Checked once per machine before the run starts. A non-interactive ssh
+        session does not read ~/.bashrc, so an engine that is there when you
+        log in by hand can still be missing when cryal calls it — a warning at
+        second one beats a hundred identical failures at hour three.
+        """
+        return []
 
     def describe(self) -> str:
         """One line for the run log and the configuration summary."""

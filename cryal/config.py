@@ -252,6 +252,32 @@ class Config:
     check_molecular_integrity: bool  = True
     integrity_max_bond_ratio:  float = 2.0
 
+    # --- PARALLEL EVALUATION ---
+    # Candidates within a cycle are independent, so they can be relaxed on
+    # several machines at once. See cryal/parallel.py for what is and is not
+    # distributed. Off by default: a run that says nothing about this keeps
+    # the exact serial behaviour it had before the feature existed.
+    use_parallel:         bool = False
+    # One entry per machine: user@host:slots, optionally :interpreter.
+    parallel_workers:     List[str] = field(default_factory=list)
+    # Slots on the server itself. Ignored when the list above names
+    # `local` explicitly, which is the more specific statement.
+    parallel_local_slots: int  = 1
+    parallel_remote_dir:  str  = "~/.cryal_work"
+    # The interpreter that can `import cryal` on a worker — on a machine set
+    # up for MACE this is usually a virtual environment, not the PATH python3.
+    parallel_python:      str  = "python3"
+    parallel_ssh_key:     str  = ""
+    parallel_ssh_timeout: int  = 30    # seconds to give up on connecting
+    # Outer bound on one remote candidate. 0 derives it from the backend's own
+    # per-structure timeout, which is what actually stops a runaway relaxation.
+    parallel_task_timeout: int = 0
+    # Consecutive transport failures before a machine is dropped from the run.
+    parallel_max_failures: int = 3
+    parallel_keep_remote:  bool = False  # leave the remote work dir in place
+    parallel_fetch_on_failure: bool = True   # bring a failed task's files back
+    parallel_fetch_step:   bool = False      # bring every task's files back
+
     # --- Derived (computed after load) ---
     mol_weight:          float = 0.0   # computed from molecule.xyz
     _volume_min_computed: float = 0.0
@@ -378,6 +404,27 @@ def load_config(filepath: str = "INPUT.txt") -> Config:
     cfg.integrity_max_bond_ratio  = _float(raw, "integritymaxbondratio",
                                            cfg.integrity_max_bond_ratio)
 
+    # PARALLEL
+    cfg.use_parallel          = _bool(raw, "useparallel", cfg.use_parallel)
+    cfg.parallel_workers      = _strlist(raw, "parallelworkers", cfg.parallel_workers)
+    cfg.parallel_local_slots  = _int(raw, "parallellocalslots", cfg.parallel_local_slots)
+    cfg.parallel_remote_dir   = _str(raw, "parallelremotedir", cfg.parallel_remote_dir)
+    cfg.parallel_python       = _str(raw, "parallelpython", cfg.parallel_python)
+    cfg.parallel_ssh_key      = _str(raw, "parallelsshkey", cfg.parallel_ssh_key)
+    cfg.parallel_ssh_timeout  = _int(raw, "parallelsshtimeout", cfg.parallel_ssh_timeout)
+    cfg.parallel_task_timeout = _int(raw, "paralleltasktimeout", cfg.parallel_task_timeout)
+    cfg.parallel_max_failures = _int(raw, "parallelmaxfailures", cfg.parallel_max_failures)
+    cfg.parallel_keep_remote  = _bool(raw, "parallelkeepremote", cfg.parallel_keep_remote)
+    cfg.parallel_fetch_on_failure = _bool(raw, "parallelfetchonfailure",
+                                          cfg.parallel_fetch_on_failure)
+    cfg.parallel_fetch_step   = _bool(raw, "parallelfetchstep", cfg.parallel_fetch_step)
+
+    # Fail on a malformed worker entry now, not when the first cycle tries to
+    # reach a machine whose name was a typo.
+    if cfg.use_parallel:
+        from .parallel import parse_workers
+        parse_workers(cfg.parallel_workers, cfg.parallel_python)
+
     # --- Validate required files ---
     if not os.path.exists(cfg.molecule_file):
         raise FileNotFoundError(f"moleculeFile not found: {cfg.molecule_file}")
@@ -424,6 +471,15 @@ def _backend_line(cfg: Config) -> str:
         return cfg.energy_backend
 
 
+def _parallel_line(cfg: Config) -> str:
+    """One line on where this run's candidates will be relaxed."""
+    if not cfg.use_parallel:
+        return "OFF (serial, this machine)"
+    machines = list(cfg.parallel_workers) or []
+    where = " ".join(machines) if machines else "this machine only"
+    return f"ON — local slots {cfg.parallel_local_slots}; workers: {where}"
+
+
 def print_config_summary(cfg: Config, logger=None):
     """Print a summary of the active configuration."""
     lines = [
@@ -453,6 +509,7 @@ def print_config_summary(cfg: Config, logger=None):
         f"  CH-pi optimizer: {'ON' if cfg.use_chpi_optimizer else 'OFF'}",
         f"  Seeds folder:    {'ON — ' + cfg.seeds_folder if cfg.use_seeds_folder else 'OFF'}",
         f"  Integrity check: {'ON' if cfg.check_molecular_integrity else 'OFF'}",
+        f"  Parallel eval:   {_parallel_line(cfg)}",
         "=" * 60,
     ]
     if logger:

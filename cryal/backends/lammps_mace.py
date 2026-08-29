@@ -93,10 +93,26 @@ class LammpsMaceBackend(EnergyBackend):
     #: seconds before a single structure is abandoned
     timeout = 1800
 
+    #: Every call is a separate `lmp` process that reads and writes nothing
+    #: outside its own step directory, so concurrent calls cannot collide.
+    thread_safe = True
+
     @classmethod
     def validate_config(cls, cfg):
         if not os.path.exists(cfg.lammps_input):
             raise FileNotFoundError(f"lammpsInput not found: {cfg.lammps_input}")
+
+    @classmethod
+    def job_files(cls, cfg) -> dict:
+        # The input script is the protocol: MD-NPT then minimize, the pair
+        # style, the model. A remote worker must run the same one.
+        return {"lammps_input": cfg.lammps_input}
+
+    @classmethod
+    def required_commands(cls, cfg) -> list:
+        # lammpsCommand carries the Kokkos flags; the executable is the head.
+        command = (getattr(cfg, "lammps_command", "") or "lmp").split()
+        return [command[0]] if command else []
 
     def describe(self) -> str:
         return f"{self.name} — {self.cfg.lammps_command} -in {self.cfg.lammps_input}"

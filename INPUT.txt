@@ -48,95 +48,32 @@ specOrder             = C H            # element order for LAMMPS atom types; mu
 # aseMaxSteps         = 500            # a relaxation that does not converge counts as failed
 # aseRelaxCell        = true           # relax cell and positions (FrechetCellFilter)
 
-% ACTIVE_LEARNING
-numCycles             = 10             # number of AL cycles after initialization
-initialStructures     = 100            # structures generated in cycle 0
-structuresPerCycle    = 50             # structures generated per AL cycle
-poolSize              = 20             # best structures kept as seeds between cycles
-maxNoImproveCycles    = 3              # stop if best energy unchanged for N cycles
-
-% SPACE_GROUPS
-# Weights based on CSD frequency statistics for organic molecular crystals.
-# No bias toward any specific SG — the GP will discover which is favorable.
-#   SG 14 (P2_1/c):   ~36%   monoclinic
-#   SG  2 (P-1):      ~24%   triclinic
-#   SG 19 (P2_12_12_1): ~11% orthorhombic
-#   SG 15 (C2/c):      ~7%   monoclinic
-#   SG  4 (P2_1):      ~6%   monoclinic
-#   SG  9 (Cc):        ~4%   monoclinic
-#   SG 33 (Pna2_1):    ~2%   orthorhombic
-#   SG 61 (Pbca):      ~2%   orthorhombic
-spaceGroups           = 14 2 19 15 4 9 33 61
-sgWeights             = 36 24 11  7 6 4  2  2
-
-% VOLUME
-# Volume range in Å³ for initial structure generation.
-# Use 'auto' to estimate from molecular weight + density range below.
-# This is the only prior knowledge needed: a plausible density range
-# for organic molecular crystals (typically 0.8–1.6 g/cm³).
-targetVolumeMin       = auto
-targetVolumeMax       = auto
-densityMin            = 0.8            # g/cm³ — lower bound for auto estimate
-densityMax            = 1.6            # g/cm³ — upper bound for auto estimate
-# Expansion factors: if PyXtal cannot place molecules at target volume,
-# the cell is expanded in these steps until placement succeeds (USPEX strategy).
-volumeExpansionFactors = 1.0 1.05 1.10 1.15 1.20 1.35 1.50
-
-% CELL
-minCellAxis           = 5.0            # Å — reject cells with any axis < this
-                                       # Scale this with your molecule: 5 Å suits benzene
-                                       # (real cell 7.4 x 9.4 x 6.8 Å); a large planar
-                                       # molecule needs a much larger value.
-
-% BETA_MONOCLINIC
-# Beta angle distribution for monoclinic space groups — UNIFORM (blind).
-# The GP + EI will discover the favorable beta range through sampling.
-# Do NOT set distribution = triangular unless you have prior knowledge.
-betaMin               = 90.0
-betaMax               = 150.0
-betaDistribution      = uniform        # 'uniform' (blind) or 'triangular' (informed)
-# betaMode            = 101.0         # only used if betaDistribution = triangular
-
-% GP
-gpKernel              = matern25       # 'matern25' (recommended) or 'rbf'
-gpNRestarts           = 5              # optimizer restarts for kernel hyperparameters
-eiXi                  = 0.01          # exploration parameter (higher = more exploration)
-numEICandidates       = 50000         # random candidates evaluated for EI maximization
-numEISuggestions      = 20            # top EI candidates used to bias next generation
-
-% CHPI_OPTIMIZER
-# CH-pi geometric optimizer: adjusts molecular positions to maximize
-# H...aromatic centroid contacts in [dMin, dMax] range.
-# Set useChpiOptimizer = False to skip this step entirely.
-useChpiOptimizer      = True
-dMin                  = 2.6           # Å — equilibrium range lower bound
-dMax                  = 3.5           # Å — equilibrium range upper bound
-dTarget               = 3.0           # Å — target H...centroid distance
-dSearch               = 6.0           # Å — search radius for contacts
-angleCHCentroidMin    = 110.0         # degrees — min C-H...centroid angle
-angleFromNormalMax    = 55.0          # degrees — max angle from ring normal
-maxChpiIter           = 100          # max optimizer iterations per structure
-maxNoImprove          = 10            # stop if no improvement for N iterations
-
-% CONTACTS
-# Minimum intermolecular contact distances for structure filtering
-minHHDistance         = 1.8           # Å — H...H
-minHeavyDistance      = 2.5           # Å — heavy...heavy
-minHXDistance         = 1.8           # Å — H...heavy
-
-% SEEDS
-# If useSeedsFolder = True, CIF files in seedsFolder/ are loaded
-# and used to generate perturbations as additional starting structures.
-# If the folder is empty or does not exist, the run starts from PyXtal only.
-useSeedsFolder        = True
-seedsFolder           = Seeds
-numPerturbationsPerSeed = 30
-maxRotPerturb         = 30.0          # degrees
-maxTransPerturb       = 0.1           # Å
-fracMolsPerturb       = 0.5           # fraction of molecules perturbed per structure
-
-% INTEGRITY
-# Molecular integrity check after LAMMPS relaxation.
-# Rejects structures where MACE-OFF23 (reactive potential) broke covalent bonds.
-checkMolecularIntegrity = True
-integrityMaxBondRatio   = 2.0         # bond broken if length > ratio * sum(cov_radii)
+% PARALLEL
+# Candidates within a cycle are independent, so they can be relaxed on several
+# machines at once. This distributes whole candidates; it does not split one
+# relaxation, and it does not change what any of them returns.
+#
+# Requirements on every worker: passwordless ssh from this machine, CrYAL and
+# its dependencies installed, and the energy engine (lmp) available to a
+# non-interactive ssh session.
+#
+# parallelWorkers  one entry per machine — user@host:slots
+#                  slots = how many candidates that machine relaxes at once.
+#                  Add a third field when the interpreter that can import
+#                  cryal is not the `python3` on its PATH, which on a machine
+#                  set up for MACE it usually is not:
+#                      raul@192.168.1.11:4:/home/raul/mace-env/bin/python
+#                  Machines pull candidates from a shared queue, so a slow one
+#                  simply takes fewer; nothing waits on the slowest.
+useParallel           = false
+parallelWorkers       =
+parallelLocalSlots    = 1             # slots on the server itself
+parallelRemoteDir     = ~/.cryal_work # per-run work dir on each worker
+parallelPython        = python3       # default interpreter for the workers
+parallelSshKey        =               # private key, if not the default one
+parallelSshTimeout    = 30            # s — give up on connecting
+parallelTaskTimeout   = 0             # s — 0 derives it from the backend
+parallelMaxFailures   = 3             # drop a machine after N failures in a row
+parallelKeepRemote    = false         # leave the remote work dir for debugging
+parallelFetchOnFailure = true         # copy a failed candidate's files back
+parallelFetchStep     = false         # copy every candidate's files back

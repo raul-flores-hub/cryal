@@ -85,6 +85,13 @@ class AseCalculatorBackend(EnergyBackend):
     name = "ase"
     aliases = ("ase_calculator",)
 
+    #: One calculator instance is shared by every relaxation (that is the
+    #: point — reloading a model per candidate would dominate the run), and an
+    #: ASE Calculator stores the atoms and results of the call in progress on
+    #: itself. Two threads would hand each other the wrong energy. Distributing
+    #: to other machines is unaffected: those are separate processes.
+    thread_safe = False
+
     def __init__(self, cfg, logger=None):
         super().__init__(cfg, logger)
         self._calc = None   # built on first use
