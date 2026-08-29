@@ -47,7 +47,8 @@ from ase import Atoms
 
 from cryal.config import Config, load_config, parse_input
 from cryal.parallel import (Worker, WorkerError, WorkerPool, atoms_from_dict,
-                            atoms_to_dict, build_pool, parse_workers)
+                            atoms_to_dict, build_pool, parse_workers,
+                            runs_entirely_on_workers)
 
 
 def quiet_logger(name="cryal.test.parallel"):
@@ -570,6 +571,94 @@ Z = 4
         # One slot through the pool is the serial path with machinery in the way.
         cfg = self._load("useParallel = true\nparallelLocalSlots = 1\n")
         self.assertIsNone(build_pool(cfg, RecordingBackend(), quiet_logger()))
+
+
+class TestCoordinatorWithoutTheBackend(unittest.TestCase):
+    """A machine that only dispatches need not be able to relax.
+
+    Requiring it to would mean installing a second potential beside the one
+    the machine already has, purely to satisfy a check -- and on a network
+    where the server runs MACE and the workers run UMA, that install is
+    the thing most likely to break the server.
+
+    Nothing is given up: `parallel.py` runs the same `validate_config()` on
+    every worker at preflight, so a wrong task or a missing model is still
+    caught in the first seconds, by the machines it actually concerns.
+    """
+
+    # An import that cannot succeed anywhere, so the backend check fails
+    # without depending on what is installed on the machine running the tests.
+    BROKEN = ("energyBackend = ase\n"
+              "aseCalculator = no.such.module.at.all\n")
+    REMOTE = ("useParallel = true\n"
+              "parallelWorkers = raul@node1:4\n"
+              "parallelLocalSlots = 0\n")
+
+    def _load(self, extra):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write(TestConfiguration.MINIMAL + extra)
+            path = f.name
+        try:
+            return load_config(path)
+        finally:
+            os.unlink(path)
+
+    def test_a_fully_remote_run_loads_without_the_backend_here(self):
+        cfg = self._load(self.REMOTE + self.BROKEN)
+        self.assertTrue(runs_entirely_on_workers(cfg))
+        # Deferred, not discarded -- the reason is kept for build_pool.
+        self.assertIn("no.such.module", cfg._local_backend_error)
+
+    def test_the_check_still_bites_when_this_machine_relaxes(self):
+        with self.assertRaises(Exception):
+            self._load(self.REMOTE.replace("parallelLocalSlots = 0",
+                                           "parallelLocalSlots = 2") + self.BROKEN)
+
+    def test_naming_local_in_the_list_counts_as_relaxing_here(self):
+        # `local` in parallelWorkers is the more specific statement and wins
+        # over parallelLocalSlots, so this server does relax after all.
+        with self.assertRaises(Exception):
+            self._load("useParallel = true\n"
+                       "parallelWorkers = local:2 raul@node1:4\n"
+                       "parallelLocalSlots = 0\n" + self.BROKEN)
+
+    def test_a_serial_run_is_unaffected(self):
+        with self.assertRaises(Exception):
+            self._load(self.BROKEN)
+
+    def test_build_pool_refuses_to_bring_the_work_home(self):
+        # Every worker fails its check, so build_pool would fall back to serial
+        # evaluation here -- on a backend nothing has validated. It must not.
+        cfg = self._load(self.REMOTE + self.BROKEN)
+
+        def disable(pool_self, worker):
+            worker.enabled = False
+
+        original = WorkerPool._preflight
+        WorkerPool._preflight = disable
+        try:
+            with self.assertRaises(WorkerError) as caught:
+                build_pool(cfg, RecordingBackend(), quiet_logger())
+        finally:
+            WorkerPool._preflight = original
+        self.assertIn("no.such.module", str(caught.exception))
+
+    def test_the_fallback_is_still_allowed_when_this_machine_can_relax(self):
+        # The guard is about the deferred check, not about falling back. A
+        # server that can run the backend keeps the old behaviour: losing
+        # every worker costs the parallelism, not the run.
+        cfg = self._load(self.REMOTE)
+        self.assertEqual(cfg._local_backend_error, "")
+
+        def disable(pool_self, worker):
+            worker.enabled = False
+
+        original = WorkerPool._preflight
+        WorkerPool._preflight = disable
+        try:
+            self.assertIsNone(build_pool(cfg, RecordingBackend(), quiet_logger()))
+        finally:
+            WorkerPool._preflight = original
 
 
 class TestInputKeysAreRead(unittest.TestCase):

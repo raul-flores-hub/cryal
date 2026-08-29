@@ -194,10 +194,89 @@ general licence; a newer install may also offer checkpoints (`uma-s-1p2`) and
 heads (`oc25`) that an older one does not. Re-check with a single point
 whenever the model, the head or the fairchem version changes.
 
+Done once more for a second head, because a parallel run over these two
+machines writes both their energies into one database: the same 2.13.0 and
+2.21.0 returned **−76.159631 eV each**, equal to every digit reported, for one
+benzene cell with `uma-s-1p1` and `omc`. Two heads agreeing is still not a
+general licence -- it is two data points -- but it is the check to repeat, and
+it costs one single point per machine.
+
 For a distributed run, prefer **copying** the cached checkpoint between machines
 over downloading it on each: the Hugging Face blob is named by its sha256, so a
 copy is provably the same weights, while a fresh download can pick up a
 different revision without saying so.
+
+## 6. The workers of a parallel run
+
+`useParallel` hands whole candidates to other machines over ssh. The preflight
+checks every worker before the first cycle and disables the ones that fail, so
+the run tells you about a broken machine in its first seconds instead of
+counting its candidates as lost structures. What it demands of each worker:
+passwordless ssh, an interpreter that can `import cryal` and `ase`, and
+whatever the chosen backend needs -- `lmp` for `lammps_mace`, `fairchem` for
+`uma`.
+
+The interpreter is the part that catches people out. It is the third field of
+the worker entry, and on a machine set up for a potential it is almost never
+the `python3` on `PATH`:
+
+```
+parallelWorkers = raul@10.0.0.11:2:/home/raul/orca-uma/bin/python
+```
+
+Install CrYAL into *that* interpreter. Build a wheel on the server and
+push it, so every machine runs the same code:
+
+```bash
+# on the server, from a checkout (pypa/build is not required)
+python - <<'EOF'
+from setuptools import build_meta as b
+print(b.build_wheel("dist"))
+EOF
+
+W=cryal-1.1.0.dev0-py3-none-any.whl
+scp dist/$W raul@10.0.0.11:/tmp/
+ssh raul@10.0.0.11 "/home/raul/orca-uma/bin/python -m pip install \
+    --no-deps --force-reinstall /tmp/$W"
+```
+
+**`--no-deps` is the whole point of doing it this way.** A machine that already
+runs the potential necessarily has `numpy`, `ase` and the engine; resolving
+CrYAL's dependency bounds against that environment can move `torch` underneath
+the potential, which is exactly how a working MACE install was lost here once.
+The worker only ever relaxes, so `pyxtal` and `scikit-learn` are not needed
+there -- structure generation and the surrogate never leave the server.
+`--force-reinstall` matters because a development version keeps its number
+across edits: without it a redeploy silently does nothing.
+
+Then verify precisely what the preflight will ask, which is cheaper than
+discovering it mid-run:
+
+```bash
+ssh raul@10.0.0.11 '/home/raul/orca-uma/bin/python -c \
+    "import cryal, ase; print(cryal.__version__, ase.__version__)"'
+```
+
+A CrYAL version mismatch between server and worker is reported as a
+warning rather than a refusal, because it is only the energies that are at
+stake and only you know whether the two versions score identically. Treat it as
+a reason to redeploy, not as noise to run through.
+
+The **server** does not need the backend at all when it relaxes nothing
+itself. Set `parallelLocalSlots = 0`, name only remote machines, and the
+backend's load-time check is skipped here -- which is what lets a MACE
+environment steer a network of UMA machines without installing the second
+stack beside the first, the exact risk this section is otherwise about. The
+check is not lost, only moved: the preflight runs that same `validate_config()`
+on every worker, so a wrong `umaTask` or a missing checkpoint still surfaces in
+the first seconds, reported by the machines it concerns.
+
+The one thing to know is what happens when the workers all go away. Evaluation
+would normally fall back to running serially here, and on a server that
+cannot run the backend that would mean relaxing candidates with something
+nothing has validated. So it refuses instead, naming the check it deferred at
+startup. A server that *can* run the backend keeps the old behaviour and
+simply carries on alone.
 
 ## Version drift
 

@@ -218,6 +218,28 @@ def parse_workers(specs, default_python: str = "python3") -> List[Worker]:
     return workers
 
 
+def runs_entirely_on_workers(cfg) -> bool:
+    """True when this machine hands out every candidate and relaxes none.
+
+    Such a server never calls the backend, so it is not required to be
+    able to run it -- which is what lets a machine with one potential steer a
+    network that has another. `load_config` uses this to decide whether a
+    failed backend check is fatal here or merely recorded.
+
+    `local` in the worker list is the more specific statement and wins over
+    parallelLocalSlots, exactly as in `WorkerPool.start`.
+    """
+    if not getattr(cfg, "use_parallel", False):
+        return False
+    try:
+        workers = parse_workers(list(getattr(cfg, "parallel_workers", []) or []),
+                                getattr(cfg, "parallel_python", "python3"))
+    except ValueError:
+        return False    # a malformed list is reported elsewhere, on its own terms
+    if not workers or any(w.is_local for w in workers):
+        return False
+    return int(getattr(cfg, "parallel_local_slots", 1) or 0) <= 0
+
 
 # ---------------------------------------------------------------------------
 # SSH transport
@@ -781,6 +803,26 @@ class WorkerPool:
 # Entry point used by the active-learning loop
 # ---------------------------------------------------------------------------
 
+def _require_backend_here(cfg, why: str) -> None:
+    """Refuse to bring the work home to a machine that cannot do it.
+
+    A server with no slots of its own is excused from the backend's
+    load-time check, because it was never going to relax anything. That licence
+    ends the moment evaluation falls back to this machine: relaxing candidates
+    with a backend nothing has validated is how a run produces energies no one
+    can defend. Fail here instead, naming the check that was deferred.
+    """
+    error = getattr(cfg, "_local_backend_error", "")
+    if not error:
+        return
+    raise WorkerError(
+        f"{why}, so evaluation would fall back to this machine — but it cannot "
+        f"run the '{getattr(cfg, 'energy_backend', '?')}' backend: {error}\n"
+        "This run was configured to relax everything on its workers "
+        "(parallelLocalSlots = 0), which is why that was not fatal at startup. "
+        "Fix the workers, or install the backend here as well.")
+
+
 def build_pool(cfg, backend, logger) -> Optional[WorkerPool]:
     """
     The pool for this run, or None when evaluation stays serial.
@@ -799,13 +841,16 @@ def build_pool(cfg, backend, logger) -> Optional[WorkerPool]:
     pool = WorkerPool(cfg, backend, logger).start()
 
     if pool.n_slots == 0:
+        pool.close()
+        _require_backend_here(cfg, "every machine failed its check")
         logger.error("No usable workers — every machine failed its check. "
                      "Falling back to serial evaluation on this machine.")
-        pool.close()
         return None
     if pool.n_slots == 1:
-        logger.info(f"One slot ({pool.describe()}) — evaluating serially.")
+        one = pool.describe()
         pool.close()
+        _require_backend_here(cfg, "only one slot is left")
+        logger.info(f"One slot ({one}) — evaluating serially.")
         return None
 
     logger.info(f"{pool.n_slots} slots across {len([w for w in pool.workers if w.enabled])} "

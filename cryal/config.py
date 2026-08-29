@@ -287,6 +287,9 @@ class Config:
     parallel_fetch_step:   bool = False      # bring every task's files back
 
     # --- Derived (computed after load) ---
+    # Why the backend refused this machine, when the run is dispatching every
+    # candidate elsewhere and so is allowed not to care. Empty otherwise.
+    _local_backend_error: str = ""
     mol_weight:          float = 0.0   # computed from molecule.xyz
     _volume_min_computed: float = 0.0
     _volume_max_computed: float = 0.0
@@ -450,7 +453,21 @@ def load_config(filepath: str = "INPUT.txt") -> Config:
     # hundred structures have been generated. Imported locally to keep the
     # config module free of any dependency on the backends package.
     from .backends import backend_class
-    backend_class(cfg.energy_backend).validate_config(cfg)
+    from .parallel import runs_entirely_on_workers
+    try:
+        backend_class(cfg.energy_backend).validate_config(cfg)
+    except Exception as exc:
+        # A run that relaxes everything on its workers never calls the backend
+        # here, so requiring it here would mean installing a second potential
+        # beside the one this machine already has, for nothing. Nothing is lost
+        # by deferring: cryal.parallel runs this very same validate_config() on
+        # every worker during preflight, so a wrong task or a missing model is
+        # still caught in the first seconds — just by the machines that will
+        # actually feel it. Recorded rather than discarded, because evaluation
+        # can still fall back here, and build_pool refuses to let it.
+        if not runs_entirely_on_workers(cfg):
+            raise
+        cfg._local_backend_error = str(exc)
 
     # --- Compute molecular weight and auto volume range ---
     cfg.mol_weight = _compute_mol_weight(cfg.molecule_file)

@@ -189,7 +189,9 @@ integrityMaxBondRatio   = 2.0         # bond broken if length > ratio * sum(cov_
 #                  simply takes fewer; nothing waits on the slowest.
 useParallel           = false
 parallelWorkers       =
-parallelLocalSlots    = 1             # slots on the server itself
+parallelLocalSlots    = 1             # slots on the server itself; 0 = dispatch
+                                      # everything, and then the server need not
+                                      # run the backend at all
 parallelRemoteDir     = ~/.cryal_work # per-run work dir on each worker
 parallelPython        = python3       # default interpreter for the workers
 parallelSshKey        =               # private key, if not the default one
