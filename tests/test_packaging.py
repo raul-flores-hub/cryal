@@ -131,7 +131,7 @@ class TestConsoleScripts(unittest.TestCase):
 
 
 class TestDependencies(unittest.TestCase):
-    """pyproject declares bounds; requirements.txt pins. Same five names."""
+    """pyproject declares bounds; requirements.txt pins. Same six names."""
 
     @staticmethod
     def _name(spec):
@@ -154,8 +154,14 @@ class TestDependencies(unittest.TestCase):
 
     def test_torch_is_not_a_dependency(self):
         # Pulling torch into this environment is what broke the exported MACE
-        # model once already; it belongs to the LAMMPS side, not here.
-        for name in ("torch", "mace-torch", "pymatgen", "rdkit"):
+        # model once already; it belongs to the LAMMPS side, not here. pymatgen
+        # arrives through pyxtal and is not ours to pin on top of it.
+        #
+        # RDKit used to be in this list and should not have been: it is not a
+        # heavy engine dependency but the CH-pi optimizer's, and that optimizer
+        # is on by default, so leaving it undeclared meant a clean
+        # `pip install cryal` raised ImportError on the shipped INPUT.
+        for name in ("torch", "mace-torch", "pymatgen"):
             self.assertNotIn(name, self.declared)
 
 

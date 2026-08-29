@@ -50,6 +50,10 @@ dependencies = [
     "scikit-learn>=1.3",
     "ase>=3.22",
     "pyxtal>=0.6",
+    # The CH-pi optimizer is RDKit's, and useChPiOptimizer defaults to true, so
+    # this is a dependency of the shipped configuration and not of an option.
+    # 2022.09 is where rdDetermineBonds arrived, which is the call it makes.
+    "rdkit>=2022.9",
 ]
 
 [project.scripts]

@@ -1,6 +1,9 @@
 # Python dependencies of the CrYAL package itself.
 #
-# These five are everything `import cryal` needs. The energy evaluation is a
+# These six are everything a default run needs. Five are what `import cryal`
+# pulls in; RDKit is imported when the CH-pi optimizer runs, and
+# useChPiOptimizer defaults to true -- so an install without it fails on the
+# shipped configuration rather than on an exotic one. The energy evaluation is a
 # separate matter: LAMMPS runs as an external process and brings its own
 # interpreter requirements (torch and mace-torch), documented in INSTALL.md.
 #
@@ -17,9 +20,11 @@ scipy==1.17.0
 scikit-learn==1.8.0
 ase==3.27.0
 pyxtal==1.1.3
+rdkit==2026.3.1
 
 # Lower bounds that are known to work, if you prefer resolving fresh versions:
 #   numpy>=1.24  scipy>=1.10  scikit-learn>=1.3  ase>=3.22  pyxtal>=0.6
+#   rdkit>=2022.9   (2022.09 is where rdDetermineBonds arrived)
 # PyXtal is the one to watch: 1.1.3 consumes the random stream differently from
 # the 2026-06 releases, so a fixed seed does not reproduce identical geometries
 # across PyXtal versions. Space-group draws are reproducible; geometries are not.

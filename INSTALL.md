@@ -15,14 +15,19 @@ pip install -r requirements.txt      # the verified pins
 pip install .
 ```
 
-That covers `import cryal`. Check it:
+That covers a default run. Five of those packages are what `import cryal`
+needs; the sixth, RDKit, is what the CH-pi optimizer uses, and
+`useChPiOptimizer` is on unless you turn it off -- so it is a dependency of the
+shipped configuration, not of an option. Check it:
 
 ```bash
 python -m unittest discover -s tests -t .
 ```
 
-101 tests, no LAMMPS, no GPU, under a second. One is an expected failure and is
-supposed to be — it records a known limitation of `unwrap_molecule`.
+160 tests, no LAMMPS, no GPU, no network, under a second. One is an expected
+failure and is supposed to be — it records a known limitation of
+`unwrap_molecule`, and will report an *unexpected success* if that is ever
+fixed.
 
 ## 2. LAMMPS with ML-IAP and Kokkos
 
