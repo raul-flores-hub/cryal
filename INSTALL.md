@@ -24,7 +24,7 @@ shipped configuration, not of an option. Check it:
 python -m unittest discover -s tests -t .
 ```
 
-160 tests, no LAMMPS, no GPU, no network, under a second. One is an expected
+162 tests, no LAMMPS, no GPU, no network, under a second. One is an expected
 failure and is supposed to be — it records a known limitation of
 `unwrap_molecule`, and will report an *unexpected success* if that is ever
 fixed.

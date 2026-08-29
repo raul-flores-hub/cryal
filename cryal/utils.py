@@ -39,6 +39,15 @@ def setup_logger(name: str, log_file: str, level: str = "INFO") -> logging.Logge
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
+    # This logger owns its output; it must not also travel to the root logger.
+    # Nothing in a plain run installs a root handler, so leaving this on looks
+    # harmless -- until a backend does. Building the UMA calculator calls
+    # logging.basicConfig() deep inside fairchem, and from that line onward
+    # every CrYAL message is printed twice, once in this format and once as
+    # `INFO:cryal:...`. It only shows up when the server relaxes in-process,
+    # so a fully dispatched run never sees it.
+    logger.propagate = False
+
     if not logger.handlers:
         # Console handler
         ch = logging.StreamHandler()
