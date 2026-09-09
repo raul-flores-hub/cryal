@@ -168,8 +168,29 @@ def _step_name(cycle: int, idx: int) -> str:
     return f"cycle{cycle:03d}_struct{idx:05d}"
 
 
+def _report_step_budget(backend, logger):
+    """Say, once per cycle, how close the relaxations came to their step limit.
+
+    A structure discarded for running out of steps is recorded exactly like a
+    structure that lost on its merits, and the limit does not carry between
+    engines — MACE converged these candidates in about 25 steps where UMA
+    needed up to 582. This tally is the only place that difference shows, so
+    a cycle that is losing structures to the budget says so in its own log.
+
+    The pool merges its workers' numbers into the backend's own tally, so a
+    distributed cycle reports what a local one would have reported.
+    """
+    budget = backend.relaxation_budget()
+    if budget is None:
+        return
+    report = budget.report()
+    if report:
+        logger.log(*report)
+    budget.reset()          # each cycle answers for itself
+
+
 def _record_result(s, relaxed, energy, cfg, cycle: int, step_name: str,
-                   db: CrystalDatabase, logger) -> bool:
+                   db: CrystalDatabase, logger, reason: str = None) -> bool:
     """
     Turn one successful evaluation into a database record. Returns False for a
     candidate that was rejected, so the caller can count it.
@@ -179,7 +200,7 @@ def _record_result(s, relaxed, energy, cfg, cycle: int, step_name: str,
     what gets written down about them.
     """
     if relaxed is None or energy is None:
-        logger.info(f"    → FAILED (relaxation or integrity)")
+        logger.info(f"    → FAILED ({reason or 'relaxation or integrity'})")
         return False
 
     cp   = cell_params_dict(relaxed)
@@ -229,8 +250,10 @@ def _evaluate_batch(struct_list, cfg, backend, cycle: int, batch_start: int,
     produced for the same structures.
     """
     if pool is not None:
-        return _evaluate_batch_parallel(struct_list, cfg, cycle, batch_start,
+        n_ok = _evaluate_batch_parallel(struct_list, cfg, cycle, batch_start,
                                         ref_bonds, mol_size, db, logger, pool)
+        _report_step_budget(backend, logger)
+        return n_ok
 
     n_ok = 0
     for i, s in enumerate(struct_list):
@@ -244,9 +267,11 @@ def _evaluate_batch(struct_list, cfg, backend, cycle: int, batch_start: int,
         relaxed, energy = backend.evaluate(
             s['atoms'], step_dir, ref_bonds, mol_size, logger=logger)
 
-        if _record_result(s, relaxed, energy, cfg, cycle, step_name, db, logger):
+        if _record_result(s, relaxed, energy, cfg, cycle, step_name, db, logger,
+                          reason=backend.last_rejection):
             n_ok += 1
 
+    _report_step_budget(backend, logger)
     return n_ok
 
 

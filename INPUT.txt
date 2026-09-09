@@ -41,12 +41,14 @@ specOrder             = C H            # element order for LAMMPS atom types; mu
 # Only read when energyBackend = ase. The calculator is named by dotted path,
 # so no calculator is a dependency of CrYAL; it is built once and reused.
 # NOTE: this is a local relaxation, not the MD-NPT protocol of the LAMMPS
-# script, and energies from different backends are not comparable.
+# script, and energies from different backends are not comparable. Nor does
+# aseMaxSteps carry between calculators: the end of each cycle reports how
+# much of that budget the relaxations actually needed.
 # aseCalculator       = mace.calculators.mace_off
 # aseCalculatorKwargs = model=medium device=cuda
 # aseOptimizer        = FIRE           # FIRE, BFGS, LBFGS, BFGSLineSearch, GPMin
 # aseFmax             = 0.05           # eV/A
-# aseMaxSteps         = 500            # a relaxation that does not converge counts as failed
+# aseMaxSteps         = 500            # not converged by here = discarded, and reported
 # aseRelaxCell        = true           # relax cell and positions (FrechetCellFilter)
 
 % BACKEND_UMA

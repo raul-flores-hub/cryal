@@ -29,9 +29,11 @@ error that points somewhere else entirely. Every backend, present and future,
 gets that gate for free -- and these tests fail if it is ever skipped.
 """
 
+import logging
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 
 import numpy as np
@@ -39,7 +41,8 @@ from ase import Atoms
 
 from cryal.backends import (EnergyBackend, available_backends, backend_class,
                             get_backend)
-from cryal.backends.ase_calculator import AseCalculatorBackend, _import_dotted
+from cryal.backends.ase_calculator import (AseCalculatorBackend,
+                                            RelaxationBudget, _import_dotted)
 from cryal.backends.lammps_mace import LammpsMaceBackend
 from cryal.config import Config, load_config
 
@@ -318,6 +321,157 @@ class TestAseBackend(unittest.TestCase):
             with self.subTest(path=path):
                 with self.assertRaises(ValueError):
                     _import_dotted(path)
+
+
+class TestRejectionReason(unittest.TestCase):
+    """Every rejection says why, where the caller can print it.
+
+    "FAILED" is the same word for a structure that was never going to work and
+    for a setting that was too tight, and only one of those is the user's to
+    fix. The reason is what tells them apart, in the run log and in what a
+    remote worker sends home.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.step = os.path.join(self.tmp, "step")
+        self.cfg = Config()
+        self.cfg.energy_backend = "ase"
+        self.cfg.ase_calculator = "tests.stub_calculator.StubCalculator"
+        self.cfg.ase_calculator_kwargs = {"energy": -2500.0}
+        self.cfg.check_molecular_integrity = False
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_the_gate_says_what_it_rejected(self):
+        backend = get_backend(self.cfg)
+        backend.evaluate(overlapping_structure(), self.step, [], 2)
+        self.assertIn("overlap", backend.last_rejection)
+
+    def test_the_energy_bound_names_the_setting_that_applied_it(self):
+        self.cfg.energy_sanity_max = -3000.0      # -2500 eV is above it
+        backend = get_backend(self.cfg)
+        backend.evaluate(sane_structure(), self.step, [], 2)
+        self.assertIn("energySanityMax", backend.last_rejection)
+
+    def test_a_reason_does_not_survive_into_the_next_candidate(self):
+        # The pool prints this next to a candidate's name; a stale reason
+        # would be filed against a structure that never had that problem.
+        backend = get_backend(self.cfg)
+        backend.evaluate(overlapping_structure(), self.step, [], 2)
+        self.assertIsNotNone(backend.last_rejection)
+        backend.evaluate(sane_structure(), self.step, [], 2)
+        self.assertIsNone(backend.last_rejection)
+
+    def test_a_backend_that_fails_without_a_word_still_gets_one(self):
+        backend = RecordingBackend(self.cfg, energy=None)
+        backend.evaluate(sane_structure(), self.step, [], 2)
+        self.assertTrue(backend.last_rejection)
+
+    def test_reasons_do_not_cross_threads(self):
+        # A thread_safe backend serves several of the pool's local slots from
+        # one instance. Two candidates in flight must not read each other's.
+        backend = get_backend(self.cfg)
+        done = threading.Event()
+
+        def reject_elsewhere():
+            backend.evaluate(overlapping_structure(),
+                             os.path.join(self.tmp, "other"), [], 2)
+            done.set()
+
+        t = threading.Thread(target=reject_elsewhere)
+        t.start()
+        done.wait(timeout=10)
+        t.join()
+        self.assertIsNone(backend.last_rejection)
+
+
+class TestStepBudget(unittest.TestCase):
+    """aseMaxSteps, and the tally that keeps it from eating a cycle in silence.
+
+    A relaxation that runs out of steps is discarded, which is correct: it was
+    not evaluated at a minimum. What is not correct is that this looks exactly
+    like a candidate losing on its merits -- and the budget does not carry
+    between engines, so a value calibrated for MACE (~25 steps here) quietly
+    throws structures away under UMA (39 to 582 on the same geometries).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.step = os.path.join(self.tmp, "step")
+        self.cfg = Config()
+        self.cfg.energy_backend = "ase"
+        self.cfg.ase_calculator = "tests.stub_calculator.StubCalculator"
+        self.cfg.ase_calculator_kwargs = {"energy": -2500.0, "force": 1.0}
+        self.cfg.ase_max_steps = 5
+        self.cfg.check_molecular_integrity = False
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _moved(self):
+        """A structure the stub calculator has not already answered for."""
+        atoms = sane_structure()
+        atoms.positions[0][0] += 0.1
+        return atoms
+
+    def test_running_out_of_steps_names_the_setting_to_raise(self):
+        backend = get_backend(self.cfg)
+        backend.evaluate(sane_structure(), self.step, [], 2)
+        self.assertIn("aseMaxSteps", backend.last_rejection)
+        self.assertIn("5", backend.last_rejection)
+
+    def test_the_reason_says_how_far_the_forces_still_were(self):
+        # The one number that separates "the budget was short" from "this
+        # candidate was hopeless": the stub leaves 1 eV/A against a 0.05 target.
+        backend = get_backend(self.cfg)
+        backend.evaluate(sane_structure(), self.step, [], 2)
+        self.assertIn("1.000", backend.last_rejection)
+
+    def test_a_cycle_that_lost_structures_to_the_budget_says_so(self):
+        self.cfg.ase_calculator_kwargs = {"energy": -2500.0, "force": 0.0}
+        backend = get_backend(self.cfg)
+        backend.evaluate(sane_structure(), self.step, [], 2)   # converges
+        backend.calculator.constant_force = 1.0                # nothing does now
+        backend.evaluate(self._moved(), self.step, [], 2)
+
+        level, message = backend.relaxation_budget().report()
+        self.assertEqual(level, logging.WARNING)
+        self.assertIn("1 of 2", message)
+        self.assertIn("aseMaxSteps", message)
+
+    def test_a_comfortable_budget_stays_quiet(self):
+        # A line printed every cycle is a line nobody reads.
+        self.cfg.ase_calculator_kwargs = {"energy": -2500.0, "force": 0.0}
+        self.cfg.ase_max_steps = 500
+        backend = get_backend(self.cfg)
+        backend.evaluate(sane_structure(), self.step, [], 2)
+        self.assertIsNone(backend.relaxation_budget().report())
+
+    def test_a_budget_nearly_spent_is_flagged_before_it_bites(self):
+        # Nothing has been lost yet, which is the point: the cycle after this
+        # one is where a slower structure disappears.
+        budget = RelaxationBudget(limit=10)
+        budget.record(steps=9, converged=True)
+        level, message = budget.report()
+        self.assertEqual(level, logging.INFO)
+        self.assertIn("9 of 10", message)
+
+    def test_each_cycle_answers_for_itself(self):
+        budget = RelaxationBudget(limit=10)
+        budget.record(steps=10, converged=False)
+        budget.reset()
+        self.assertIsNone(budget.report())
+
+    def test_a_workers_numbers_fold_into_the_servers(self):
+        # The relaxation ran on another machine; it still spent this run's
+        # budget, so the cycle report must count it.
+        budget = RelaxationBudget(limit=10)
+        budget.record(steps=4, converged=True)
+        budget.merge({"converged": 2, "exhausted": 1, "max_steps_used": 9})
+        self.assertEqual(budget.as_dict(),
+                         {"converged": 3, "exhausted": 1, "max_steps_used": 9})
 
 
 class TestCompatibilityShim(unittest.TestCase):

@@ -49,7 +49,9 @@ molecular-integrity check apply here exactly as they do at home.
 A rejected structure is a result, not an error: `ok: false` with a reason.
 An error is this program failing to reach a verdict at all, and the server
 treats the two differently — the first is recorded, the second is retried
-somewhere else.
+somewhere else. The reason is the backend's own, not a summary invented here:
+"the optimizer spent its step budget" and "the molecule came apart" are the
+same word to the server otherwise, and only one of them is the server's to fix.
 """
 
 import json
@@ -126,15 +128,21 @@ def run_task(task_dir: str) -> dict:
                                        logger=logger)
     handler.flush()
 
+    # This process handles one candidate, so the backend's tally is that
+    # candidate's. The server merges it into its own and reports the cycle.
+    budget = backend.relaxation_budget()
+    relax_stats = budget.as_dict() if budget is not None else None
+
     if relaxed is None or energy is None:
         return {"ok": False,
-                "reason": "rejected by the backend (gate, energy bound, "
-                          "integrity check, or a failed relaxation)",
+                "reason": backend.last_rejection or "rejected by the backend",
+                "relax": relax_stats,
                 "log": _log_tail(log_path)}
 
     return {"ok": True,
             "energy": float(energy),
-            "atoms": atoms_to_dict(relaxed)}
+            "atoms": atoms_to_dict(relaxed),
+            "relax": relax_stats}
 
 
 def check_job(job_dir: str) -> dict:

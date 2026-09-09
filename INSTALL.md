@@ -70,9 +70,9 @@ embeds, not by CrYAL.
 
 An exported model is a *pickled object*: its attributes come from the file, its
 class code from the installed `mace` package. When mace-torch adds a field to
-that class, older files break — every relaxation fails in seconds and CrYAL
-reports `FAILED (LAMMPS or integrity)`, which sounds like bad geometry and is
-not.
+that class, older files break — every relaxation fails in seconds. The run log
+names what happened (`lmp` exited non-zero, or wrote no output files) and which
+step directory to look in, but not why LAMMPS gave up.
 
 **Read `AL_results/steps/<structure>/lammps.output`, not `log.lammps`.** The
 real error only appears in the former:
@@ -187,7 +187,16 @@ The relaxation is configured by the shared `aseOptimizer` / `aseFmax` /
 `aseMaxSteps` / `aseRelaxCell` keys. Note that `aseMaxSteps` matters more here
 than with MACE: on a set of 19 crystal candidates MACE-OFF converged in about 25
 steps and UMA needed 39–582 from the same geometries, so a budget tuned for one
-silently fails structures with the other.
+fails structures with the other.
+
+That is why every cycle ends with a line about the budget. A structure that has
+not converged when the steps run out is discarded — it was not evaluated at a
+minimum — and on its own that is indistinguishable from a candidate losing on
+its merits. The run log therefore says which setting discarded it and how far
+its forces still were from the target, warns once per cycle when structures
+were lost that way, and says so in advance when the slowest relaxation that
+*did* converge is already near the limit. A distributed run reports the same
+thing: each worker sends its step counts home with its verdict.
 
 ### Versions across machines
 

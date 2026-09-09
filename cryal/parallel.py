@@ -650,11 +650,16 @@ class WorkerPool:
             if slot is None:
                 return None, None, "FAILED (no workers left)"
             try:
+                # Clear it first: this thread served other candidates before
+                # this one, and a stale reason would be filed under this name.
+                self.backend.note_rejection(None)
                 relaxed, energy = self._evaluate_on(slot, atoms, step_dir,
                                                     ref_bonds, mol_size)
                 self._note_success(slot)
                 if relaxed is None:
-                    return None, None, f"rejected on {slot.label}"
+                    why = self.backend.last_rejection
+                    return None, None, (f"rejected on {slot.label}: {why}"
+                                        if why else f"rejected on {slot.label}")
                 return relaxed, energy, f"E={energy:.4f} eV on {slot.label}"
             except WorkerError as e:
                 self._note_failure(slot, e)
@@ -680,8 +685,12 @@ class WorkerPool:
                                          logger=self.logger)
         except Exception as e:
             # A single bad candidate must not end the search; the backends
-            # already work this way and the pool must not change that.
-            self.logger.debug(f"  local evaluation raised {type(e).__name__}: {e}")
+            # already work this way and the pool must not change that. It is
+            # still worth naming: an engine that raises on every structure
+            # would otherwise look like a cycle of unlucky candidates.
+            reason = f"local evaluation raised {type(e).__name__}: {e}"
+            self.backend.note_rejection(reason)
+            self.logger.debug(f"  {reason}")
             return None, None
 
     # -- remote ------------------------------------------------------------
@@ -754,11 +763,18 @@ class WorkerPool:
                           recursive=True, timeout=600)
         self._cleanup_task(worker, remote_task)
 
+        # However far away it ran, the relaxation spent this run's step
+        # budget, so it belongs in the same tally the local slots feed.
+        budget = self.backend.relaxation_budget()
+        if budget is not None and result.get("relax"):
+            budget.merge(result["relax"])
+
         if not result.get("ok"):
             # A verdict, not a breakdown: the machine ran the candidate and
             # the candidate lost. Same outcome as the serial path, and the
-            # worker's own log says which gate rejected it.
+            # reason is the backend's own, so it reads the same either way.
             reason = result.get("error") or result.get("reason") or "rejected"
+            self.backend.note_rejection(reason)
             self.logger.debug(f"  {worker.label}/{task_id}: {reason}")
             tail = result.get("log") or result.get("traceback")
             if tail:

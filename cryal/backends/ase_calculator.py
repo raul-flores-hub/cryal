@@ -39,11 +39,19 @@ Two differences from the LAMMPS backend are worth stating plainly:
   * Energies are only comparable within one backend and one potential. A
     database built with one must not be merged with a database built with
     another; on resume, keep the backend you started with.
+  * `aseMaxSteps` is a per-calculator setting, not a per-project one. A
+    structure that has not converged when the budget runs out is discarded,
+    which is right — it was not evaluated at a minimum — but it looks exactly
+    like a structure that lost on its merits. RelaxationBudget below is what
+    makes the difference visible.
 """
 
 import importlib
+import logging
 import os
+import threading
 
+import numpy as np
 from ase.io import write
 
 from . import register
@@ -78,6 +86,105 @@ def _import_dotted(path: str):
             f"aseCalculator '{path}': '{module_path}' has no '{attr}'") from None
 
 
+class RelaxationBudget:
+    """Running tally of how close a cycle's relaxations came to aseMaxSteps.
+
+    Discarding a structure that never converged is the right call: it was not
+    evaluated at a minimum, so its energy does not belong in the database. It
+    is also invisible — the cycle simply keeps fewer candidates, and the run
+    looks unlucky rather than misconfigured.
+
+    That matters because the budget does not carry between engines. From the
+    same geometries MACE converged in about 25 steps where UMA needed 39 to
+    582, so a value calibrated for one quietly throws structures away with the
+    other.
+
+    The number to watch is not the average but the largest: a cycle whose
+    slowest converged relaxation already sits near the limit is one structure
+    away from losing a real minimum.
+
+    Counts arrive from several threads (the pool's local slots) and from other
+    machines (merge), so they are taken under a lock.
+    """
+
+    #: report() stays quiet while the worst relaxation is below this fraction
+    #: of the budget — a line printed every cycle stops being read.
+    NEAR_LIMIT = 0.8
+
+    def __init__(self, limit: int):
+        self.limit = int(limit)
+        self._lock = threading.Lock()
+        self.n_converged = 0
+        self.n_exhausted = 0
+        self.max_steps_used = 0
+
+    def record(self, steps: int, converged: bool):
+        with self._lock:
+            if converged:
+                self.n_converged += 1
+                self.max_steps_used = max(self.max_steps_used, int(steps))
+            else:
+                self.n_exhausted += 1
+
+    def merge(self, other: dict):
+        """Fold in a tally kept elsewhere — what a remote worker sent back."""
+        with self._lock:
+            self.n_converged += int(other.get("converged", 0))
+            self.n_exhausted += int(other.get("exhausted", 0))
+            self.max_steps_used = max(self.max_steps_used,
+                                      int(other.get("max_steps_used", 0)))
+
+    def as_dict(self) -> dict:
+        with self._lock:
+            return {"converged":     self.n_converged,
+                    "exhausted":     self.n_exhausted,
+                    "max_steps_used": self.max_steps_used}
+
+    def reset(self):
+        with self._lock:
+            self.n_converged = 0
+            self.n_exhausted = 0
+            self.max_steps_used = 0
+
+    def report(self):
+        """One line for the end of a cycle as (log level, message), or None."""
+        with self._lock:
+            kept, lost, worst = (self.n_converged, self.n_exhausted,
+                                 self.max_steps_used)
+        if not kept + lost:
+            return None
+        if lost:
+            tail = (f"; the {kept} that converged needed up to {worst} steps"
+                    if kept else "")
+            return (logging.WARNING,
+                    f"  aseMaxSteps: {lost} of {kept + lost} relaxations spent "
+                    f"the {self.limit}-step budget without converging and were "
+                    f"discarded{tail} — raise aseMaxSteps if this cycle lost "
+                    f"structures it should have kept")
+        if worst >= self.NEAR_LIMIT * self.limit:
+            return (logging.INFO,
+                    f"  aseMaxSteps: all {kept} relaxations converged, the "
+                    f"slowest in {worst} of {self.limit} steps — the budget is "
+                    f"nearly spent")
+        return None
+
+
+def _reached_fmax(target):
+    """The largest force left on the optimizer's degrees of freedom, or None.
+
+    Read once the optimizer has stopped. ASE checks convergence right after
+    the last step's force evaluation, so nothing has moved since and the
+    calculator answers from its cache; this costs no extra work. Guarded all
+    the same, because a number for the log must never turn a clean rejection
+    into an exception.
+    """
+    try:
+        forces = target.get_forces()
+        return float(np.sqrt((forces ** 2).sum(axis=1).max()))
+    except Exception:
+        return None
+
+
 @register
 class AseCalculatorBackend(EnergyBackend):
     """Local relaxation in this process, with a user-named ASE calculator."""
@@ -95,6 +202,10 @@ class AseCalculatorBackend(EnergyBackend):
     def __init__(self, cfg, logger=None):
         super().__init__(cfg, logger)
         self._calc = None   # built on first use
+        self._budget = RelaxationBudget(cfg.ase_max_steps)
+
+    def relaxation_budget(self):
+        return self._budget
 
     @classmethod
     def validate_config(cls, cfg):
@@ -148,15 +259,23 @@ class AseCalculatorBackend(EnergyBackend):
             converged = opt.run(fmax=cfg.ase_fmax, steps=cfg.ase_max_steps)
             energy = float(work.get_potential_energy())
         except Exception as e:
-            if logger:
-                logger.debug(f"  ASE: relaxation failed — {e}")
-            return None, None
+            return self._reject(logger, f"relaxation failed — {e}")
+
+        steps = opt.get_number_of_steps()
+        self._budget.record(steps, converged)
 
         if not converged:
-            if logger:
-                logger.debug(f"  ASE: not converged in {cfg.ase_max_steps} steps "
-                             f"(fmax target {cfg.ase_fmax} eV/Å)")
-            return None, None
+            # The fmax it reached is the number worth carrying: close to the
+            # target means the budget was short, far from it means the
+            # candidate was hopeless, and the run log cannot tell them apart
+            # from the step count alone.
+            reached = _reached_fmax(target)
+            left = f"{reached:.3f}" if reached is not None else "unknown"
+            return self._reject(
+                logger,
+                f"not converged: spent the aseMaxSteps budget of "
+                f"{cfg.ase_max_steps} with fmax {left} eV/Å still above the "
+                f"{cfg.ase_fmax} target")
 
         relaxed = work.copy()   # copy() drops the calculator
         try:
@@ -165,6 +284,6 @@ class AseCalculatorBackend(EnergyBackend):
                 f.write(f"{energy:.6f}\n")
         except Exception as e:
             if logger:
-                logger.debug(f"  ASE: could not write step output — {e}")
+                logger.debug(f"  {self.name}: could not write step output — {e}")
 
         return relaxed, energy

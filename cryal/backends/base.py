@@ -35,9 +35,16 @@ potential produce forces of order 1e5 eV/A; the minimizer cannot escape them
 and the run dies minutes later with an error that points at the relaxation
 instead of at the geometry. Catching it here costs 5 s per bad structure
 instead of ~5 min, and every backend inherits that for free.
+
+A rejection is a verdict and not an error — the search goes on — but "FAILED"
+on its own does not separate a structure that was never going to work from a
+setting that was too tight, and those call for opposite reactions. So every
+rejection also records why, in `last_rejection`, and cryal.parallel hands the
+worker's reason back so a distributed run reads like a local one.
 """
 
 import os
+import threading
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -125,6 +132,43 @@ class EnergyBackend(ABC):
     def __init__(self, cfg, logger=None):
         self.cfg = cfg
         self.logger = logger
+        self._tls = threading.local()
+
+    # -- why a candidate produced no energy --------------------------------
+
+    @property
+    def last_rejection(self):
+        """Why the evaluate() that just finished *in this thread* said no.
+
+        Thread-local because a thread_safe backend serves several of the
+        pool's local slots from one instance, and a plain attribute would file
+        one candidate's reason under another candidate's name.
+        """
+        return getattr(self._tls, "rejection", None)
+
+    def note_rejection(self, reason):
+        """Record a rejection that was decided somewhere else.
+
+        cryal.parallel uses this to put a remote worker's verdict where the
+        local one would have left it, so its caller reads one place either way.
+        """
+        self._tls.rejection = reason
+
+    def _reject(self, logger, reason: str):
+        """Record why this candidate produced no energy, and note it in the log.
+
+        Debug, deliberately: the caller prints the reason beside the candidate
+        that lost, and printing it here as well says everything twice. What
+        rises above debug is the pattern — a whole cycle discarded by one
+        setting — not the single rejection.
+
+        Returns the (None, None) that relax() and evaluate() answer with, so a
+        rejection can be written as one statement: `return self._reject(...)`.
+        """
+        self.note_rejection(reason)
+        if logger:
+            logger.debug(f"  {self.name}: {reason}")
+        return None, None
 
     # -- optional hooks ----------------------------------------------------
 
@@ -166,6 +210,16 @@ class EnergyBackend(ABC):
         """
         return []
 
+    def relaxation_budget(self):
+        """The tally of how this backend's relaxations used their step limit.
+
+        None for an engine that has no such limit to report. The
+        active-learning loop asks for it at the end of every cycle, and
+        cryal.parallel folds each worker's numbers into the same object, so a
+        distributed run reports what a local one would have reported.
+        """
+        return None
+
     def describe(self) -> str:
         """One line for the run log and the configuration summary."""
         return self.name
@@ -197,34 +251,36 @@ class EnergyBackend(ABC):
         """
         logger = logger or self.logger
         os.makedirs(step_dir, exist_ok=True)
+        self.note_rejection(None)
 
         # Reliable pre-relaxation gate. A PBC-correct NeighborList check
         # (unlike the MIC-based contact checks) on overlaps that no minimizer
         # can undo — see the module docstring for why this runs first.
         if not check_bond_integrity(atoms):
-            if logger:
-                logger.debug("  Pre-relaxation: rejected — atomic overlap "
-                             "< 0.8 Å (would explode)")
-            return None, None
+            return self._reject(logger, "rejected before relaxation — atomic "
+                                        "overlap < 0.8 Å (would explode)")
 
         relaxed, energy = self.relax(atoms, step_dir, logger=logger)
         if relaxed is None or energy is None:
+            if self.last_rejection is None:
+                # A backend that reported failure without saying why. Better a
+                # vague reason than a blank one: the caller prints whatever is
+                # here next to the candidate that lost.
+                self.note_rejection("the relaxation produced no energy")
             return None, None
 
         # Sanity check on energy. The bound is a configuration knob because it
         # is only meaningful against a given potential's zero of energy.
         limit = getattr(self.cfg, "energy_sanity_max", None)
         if limit is not None and energy > limit:
-            if logger:
-                logger.debug(f"  {self.name}: unrealistic energy {energy:.2f} eV")
-            return None, None
+            return self._reject(
+                logger, f"unrealistic energy {energy:.2f} eV, above the "
+                        f"energySanityMax bound of {limit}")
 
         # Molecular integrity: did the relaxation break the molecule?
         if getattr(self.cfg, "check_molecular_integrity", False) and ref_bonds:
             if not check_molecular_integrity(relaxed, mol_size, ref_bonds):
-                if logger:
-                    logger.debug(f"  {self.name}: molecular integrity failed "
-                                 "(covalent bond broken)")
-                return None, None
+                return self._reject(logger, "molecular integrity failed "
+                                            "(a covalent bond broke)")
 
         return relaxed, energy

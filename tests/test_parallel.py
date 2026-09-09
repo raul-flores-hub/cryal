@@ -45,6 +45,8 @@ import unittest
 import numpy as np
 from ase import Atoms
 
+from cryal.backends import get_backend
+from cryal.backends.base import EnergyBackend
 from cryal.config import Config, load_config, parse_input
 from cryal.parallel import (Worker, WorkerError, WorkerPool, atoms_from_dict,
                             atoms_to_dict, build_pool, parse_workers,
@@ -66,14 +68,21 @@ def structure(seed: int = 0) -> Atoms:
                  cell=np.eye(3) * (15.0 + seed), pbc=True)
 
 
-class RecordingBackend:
-    """Stands in for an energy backend, and remembers what it was asked."""
+class RecordingBackend(EnergyBackend):
+    """Stands in for an energy backend, and remembers what it was asked.
+
+    A real subclass rather than a look-alike: the pool reads a backend for
+    more than its energies -- the rejection channel among them -- and a double
+    that carried its own copy of that would keep passing after the contract
+    moved on.
+    """
 
     name = "recording"
     thread_safe = True
     timeout = 10
 
     def __init__(self, energy_of=None, fail_on=(), thread_safe=True):
+        super().__init__(cfg=None, logger=None)
         self.energy_of = energy_of or (lambda atoms: -100.0)
         self.fail_on = set(fail_on)
         self.thread_safe = thread_safe
@@ -90,6 +99,9 @@ class RecordingBackend:
 
     def describe(self):
         return self.name
+
+    def relax(self, atoms, step_dir, logger=None):
+        raise NotImplementedError("evaluate() is overridden; relax is not used")
 
     def evaluate(self, atoms, step_dir, ref_bonds, mol_size, logger=None):
         with self._lock:
@@ -343,10 +355,13 @@ class TestRemoteWorker(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _task(self, atoms, **cfg_kwargs):
+        kwargs = cfg_kwargs.pop("ase_calculator_kwargs",
+                                {"energy": -1000.0, "force": 0.0})
+        optimizer = cfg_kwargs.pop("ase_optimizer", "BFGS")
         cfg = Config(energy_backend="ase",
                      ase_calculator="tests.stub_calculator.StubCalculator",
-                     ase_calculator_kwargs={"energy": -1000.0, "force": 0.0},
-                     ase_optimizer="BFGS", ase_relax_cell=False,
+                     ase_calculator_kwargs=kwargs,
+                     ase_optimizer=optimizer, ase_relax_cell=False,
                      **cfg_kwargs)
         pool = WorkerPool(cfg, RecordingBackend(), quiet_logger())
         worker = Worker(label="n1", slots=1, host="n1", job_dir="/remote/job")
@@ -403,6 +418,29 @@ class TestRemoteWorker(unittest.TestCase):
         with open(result_path) as f:
             self.assertFalse(json.load(f)["ok"])
 
+    def test_the_reason_that_comes_back_is_the_backends_own(self):
+        # "rejected" alone reads the same for a structure that fell apart and
+        # for a step budget that was too small, and only one of those is the
+        # server's to fix. A candidate that cannot converge must say which.
+        result_path = self._task(
+            structure(), ase_max_steps=3, ase_optimizer="FIRE",
+            ase_calculator_kwargs={"energy": -1000.0, "force": 1.0})
+        self.assertEqual(self._run(), 3)
+        with open(result_path) as f:
+            result = json.load(f)
+        self.assertIn("aseMaxSteps", result["reason"])
+
+    def test_the_workers_step_count_travels_with_its_verdict(self):
+        # The relaxation happened over there, but it spent this run's budget,
+        # so the server's cycle report has to be able to count it.
+        result_path = self._task(
+            structure(), ase_max_steps=3, ase_optimizer="FIRE",
+            ase_calculator_kwargs={"energy": -1000.0, "force": 1.0})
+        self._run()
+        with open(result_path) as f:
+            result = json.load(f)
+        self.assertEqual(result["relax"]["exhausted"], 1)
+
     def test_a_broken_task_still_writes_a_verdict(self):
         # Silence is what makes the server retry elsewhere, so a worker that
         # failed for its own reasons must say so rather than say nothing.
@@ -414,6 +452,92 @@ class TestRemoteWorker(unittest.TestCase):
             result = json.load(f)
         self.assertFalse(result["ok"])
         self.assertIn("error", result)
+
+
+class _HandbackSsh:
+    """An ssh that never leaves this machine.
+
+    Every step succeeds and `pull` hands over the verdict the test wants the
+    worker to have written. That is enough to drive the real _evaluate_remote,
+    which is where a worker's answer becomes the server's own state.
+    """
+
+    def __init__(self, result):
+        self.result = result
+
+    def run(self, worker, command, timeout=None):
+        return 0, "", ""
+
+    def push(self, worker, local_path, remote_path, timeout=None):
+        return 0, "", ""
+
+    def pull(self, worker, remote_path, local_path, timeout=None,
+             recursive=False):
+        with open(local_path, "w") as f:
+            json.dump(self.result, f)
+        return 0, "", ""
+
+
+class TestRemoteVerdictsReachTheServer(unittest.TestCase):
+    """A rejection decided elsewhere has to land where a local one would.
+
+    Otherwise the two halves of a distributed run report different things: the
+    machines doing the relaxing know their step budget ran out, and the server
+    writing the log and the database does not.
+    """
+
+    REJECTED = {
+        "ok": False,
+        "reason": ("not converged: spent the aseMaxSteps budget of 10 with "
+                   "fmax 1.000 eV/Å still above the 0.05 target"),
+        "relax": {"converged": 0, "exhausted": 1, "max_steps_used": 0},
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cryal_verdict_")
+        self.cfg = Config(use_parallel=True, energy_backend="ase",
+                          ase_calculator="tests.stub_calculator.StubCalculator",
+                          ase_calculator_kwargs={"energy": -1000.0},
+                          ase_max_steps=10)
+        self.backend = get_backend(self.cfg)
+        self.worker = Worker(label="raul@node1", slots=1, host="node1",
+                             user="raul", job_dir="/tmp/job", config_dict={})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _evaluate(self, result):
+        pool = WorkerPool(self.cfg, self.backend, quiet_logger())
+        pool.ssh = _HandbackSsh(result)
+        return pool._evaluate_remote(
+            self.worker, structure(),
+            os.path.join(self.tmp, "cycle000_struct00000"), [], 4)
+
+    def test_a_workers_step_counts_join_the_servers_tally(self):
+        self.assertEqual(self._evaluate(self.REJECTED), (None, None))
+        self.assertEqual(self.backend.relaxation_budget().as_dict(),
+                         {"converged": 0, "exhausted": 1, "max_steps_used": 0})
+
+    def test_a_relaxation_that_converged_elsewhere_counts_too(self):
+        # Not only the losses: the tally warns before the budget starts biting,
+        # and it can only do that if it sees how long the successes took.
+        self._evaluate({"ok": True, "energy": -1000.0,
+                        "atoms": atoms_to_dict(structure()),
+                        "relax": {"converged": 1, "exhausted": 0,
+                                  "max_steps_used": 9}})
+        self.assertEqual(
+            self.backend.relaxation_budget().as_dict()["max_steps_used"], 9)
+
+    def test_a_workers_reason_reads_like_a_local_one(self):
+        self._evaluate(self.REJECTED)
+        self.assertIn("aseMaxSteps", self.backend.last_rejection)
+
+    def test_a_worker_one_version_behind_is_not_a_crash(self):
+        # It answers without the fields this version added; that costs the
+        # cycle report one relaxation, not the run.
+        self._evaluate({"ok": False, "reason": "rejected by the backend"})
+        self.assertEqual(
+            self.backend.relaxation_budget().as_dict()["exhausted"], 0)
 
 
 class TestRemoteJobCheck(unittest.TestCase):

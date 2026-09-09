@@ -130,9 +130,7 @@ class LammpsMaceBackend(EnergyBackend):
         try:
             _write_lammps_data(atoms, struct_path, cfg.spec_order)
         except Exception as e:
-            if logger:
-                logger.debug(f"  LAMMPS: failed to write structure.data — {e}")
-            return None, None
+            return self._reject(logger, f"failed to write structure.data — {e}")
 
         # Copy LAMMPS input to step directory
         lmp_input_local = os.path.join(step_dir, os.path.basename(cfg.lammps_input))
@@ -150,24 +148,17 @@ class LammpsMaceBackend(EnergyBackend):
                     timeout=self.timeout
                 )
         except subprocess.TimeoutExpired:
-            if logger:
-                logger.debug(f"  LAMMPS: timeout in {step_dir}")
-            return None, None
+            return self._reject(logger, f"timed out after {self.timeout} s")
         except Exception as e:
-            if logger:
-                logger.debug(f"  LAMMPS: execution error — {e}")
-            return None, None
+            return self._reject(logger, f"execution error — {e}")
 
         if result.returncode != 0:
-            if logger:
-                logger.debug(f"  LAMMPS: non-zero exit code ({result.returncode})")
-            return None, None
+            return self._reject(logger, f"lmp exited {result.returncode} "
+                                        f"(see lammps.output in {step_dir})")
 
         # Read results
         if not os.path.exists(minim_path) or not os.path.exists(energy_path):
-            if logger:
-                logger.debug(f"  LAMMPS: output files missing in {step_dir}")
-            return None, None
+            return self._reject(logger, f"output files missing in {step_dir}")
 
         try:
             relaxed = read(minim_path, format='lammps-data',
@@ -175,8 +166,6 @@ class LammpsMaceBackend(EnergyBackend):
             with open(energy_path) as f:
                 energy = float(f.read().strip())
         except Exception as e:
-            if logger:
-                logger.debug(f"  LAMMPS: could not read output — {e}")
-            return None, None
+            return self._reject(logger, f"could not read output — {e}")
 
         return relaxed, energy
