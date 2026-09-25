@@ -49,10 +49,13 @@ from .config import Config
 
 warnings.filterwarnings('ignore')
 
-# Crystal system classification
-_MONOCLINIC   = frozenset({4, 9, 14, 15})
-_ORTHORHOMBIC = frozenset({19, 33, 61})
-_TRICLINIC    = frozenset({2})
+# Crystal system classification, by space-group number. These used to list
+# only the eight default groups, so any other group (Cmce, 64, for one) fell
+# through to the triclinic branch of random_lattice_for_sg, got random angles,
+# and PyXtal rejected every attempt without a word in the log.
+_TRICLINIC    = frozenset(range(1, 3))
+_MONOCLINIC   = frozenset(range(3, 16))
+_ORTHORHOMBIC = frozenset(range(16, 75))
 
 
 # ---------------------------------------------------------------------------
