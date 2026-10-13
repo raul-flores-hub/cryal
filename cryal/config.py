@@ -226,6 +226,11 @@ class Config:
     # best structures found so far still happens. What is removed is only the
     # Expected-Improvement bias on where new candidates are generated.
     use_gp:              bool  = True
+    # gpAnisotropy: append longest/shortest cell axis to the GP features and
+    # make the GP-biased half of each batch reproduce the suggested
+    # anisotropy. Off by default, so every input written before the key
+    # existed keeps meaning the 7-feature surrogate it was run with.
+    gp_anisotropy:       bool  = False
     gp_kernel:           str   = "matern25"
     gp_n_restarts:       int   = 5
     ei_xi:               float = 0.01
@@ -393,6 +398,7 @@ def load_config(filepath: str = "INPUT.txt") -> Config:
 
     # GP
     cfg.use_gp            = _bool(raw, "usegp", cfg.use_gp)
+    cfg.gp_anisotropy     = _bool(raw, "gpanisotropy", cfg.gp_anisotropy)
     cfg.gp_kernel         = _str(raw, "gpkernel", cfg.gp_kernel)
     cfg.gp_n_restarts     = _int(raw, "gpnrestarts", cfg.gp_n_restarts)
     cfg.ei_xi             = _float(raw, "eixi", cfg.ei_xi)
@@ -545,7 +551,8 @@ def print_config_summary(cfg: Config, logger=None):
         f"  Space groups:    {cfg.space_groups}",
         f"  SG weights:      {cfg.sg_weights}",
         "",
-        f"  GP surrogate:    {'ON' if cfg.use_gp else 'OFF — no EI bias (ablation control)'}",
+        f"  GP surrogate:    {'ON' if cfg.use_gp else 'OFF — no EI bias (ablation control)'}"
+        + (" + anisotropy feature" if cfg.use_gp and cfg.gp_anisotropy else ""),
         f"  CH-pi optimizer: {'ON' if cfg.use_chpi_optimizer else 'OFF'}",
         f"  Seeds folder:    {'ON — ' + cfg.seeds_folder if cfg.use_seeds_folder else 'OFF'}",
         f"  Integrity check: {'ON' if cfg.check_molecular_integrity else 'OFF'}",

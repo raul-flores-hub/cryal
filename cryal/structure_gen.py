@@ -62,9 +62,26 @@ _ORTHORHOMBIC = frozenset(range(16, 75))
 # Lattice generation
 # ---------------------------------------------------------------------------
 
+def _axis_ratios(sigma: float, anisotropy_target: Optional[float]) -> Tuple[float, float]:
+    """
+    Ratios b/a and c/a. Without a target, log-normal (the default sampler).
+    With one, the longest/shortest ratio is drawn within +-10 % of the target,
+    the middle axis log-uniform between them, and the three are shuffled so no
+    axis is favoured.
+    """
+    if anisotropy_target is None:
+        return np.exp(random.gauss(0.0, sigma)), np.exp(random.gauss(0.0, sigma))
+    t = random.uniform(max(1.0, 0.9 * anisotropy_target), max(1.0, 1.1 * anisotropy_target))
+    m = np.exp(random.uniform(0.0, np.log(t)))
+    p = [1.0, m, t]
+    random.shuffle(p)
+    return p[1] / p[0], p[2] / p[0]
+
+
 def random_lattice_for_sg(sg: int, volume: float, cfg: Config,
-                           beta_override: Optional[float] = None
-                           ) -> Tuple[float, float, float, float, float, float]:
+                          beta_override: Optional[float] = None,
+                          anisotropy_target: Optional[float] = None
+                          ) -> Tuple[float, float, float, float, float, float]:
     """
     Generate random cell parameters (a, b, c, alpha, beta, gamma) for a
     given space group and target volume.
@@ -72,6 +89,9 @@ def random_lattice_for_sg(sg: int, volume: float, cfg: Config,
     Axial ratios are sampled from a log-normal distribution (sigma=0.5),
     favoring moderately anisotropic cells while allowing a wide range.
     All axes are guaranteed >= cfg.min_cell_axis.
+
+    anisotropy_target (gpAnisotropy): longest/shortest axis ratio to
+    reproduce, within +-10 %, instead of the log-normal ratios.
 
     Beta angle behavior:
       - If beta_override is provided: beta = beta_override
@@ -88,15 +108,13 @@ def random_lattice_for_sg(sg: int, volume: float, cfg: Config,
             else:
                 beta = random.uniform(cfg.beta_min, cfg.beta_max)
             sin_b = np.sin(np.radians(beta))
-            r1 = np.exp(random.gauss(0.0, 0.5))
-            r2 = np.exp(random.gauss(0.0, 0.5))
+            r1, r2 = _axis_ratios(0.5, anisotropy_target)
             a = (volume / (r1 * r2 * sin_b)) ** (1.0 / 3.0)
             b, c = a * r1, a * r2
 
         elif sg in _ORTHORHOMBIC:
             alpha = beta = gamma = 90.0
-            r1 = np.exp(random.gauss(0.0, 0.5))
-            r2 = np.exp(random.gauss(0.0, 0.5))
+            r1, r2 = _axis_ratios(0.5, anisotropy_target)
             a = (volume / (r1 * r2)) ** (1.0 / 3.0)
             b, c = a * r1, a * r2
 
@@ -111,8 +129,7 @@ def random_lattice_for_sg(sg: int, volume: float, cfg: Config,
             if det < 0.01:
                 continue
             vol_factor = np.sqrt(det)
-            r1 = np.exp(random.gauss(0.0, 0.4))
-            r2 = np.exp(random.gauss(0.0, 0.4))
+            r1, r2 = _axis_ratios(0.4, anisotropy_target)
             a = (volume / (r1 * r2 * vol_factor)) ** (1.0 / 3.0)
             b, c = a * r1, a * r2
 
@@ -177,13 +194,14 @@ def generate_structures(mol_file: str, cfg: Config, n: int,
     n_biased   = (n // 2) if suggestions else 0
     n_unbiased = n - n_biased
 
-    def _attempt(sg, volume, beta_override=None):
+    def _attempt(sg, volume, beta_override=None, anisotropy_target=None):
         """One generation attempt with USPEX-like expansion loop."""
         base_vol = volume
         for expansion in cfg.volume_expansion_factors:
             vol = base_vol * expansion
             a, b, c, alpha, beta, gamma = random_lattice_for_sg(
-                sg, vol, cfg, beta_override=beta_override)
+                sg, vol, cfg, beta_override=beta_override,
+                anisotropy_target=anisotropy_target)
             atoms = _try_pyxtal(mol_abs, sg, cfg.Z, a, b, c, alpha, beta, gamma, expected)
             if atoms is None:
                 continue
@@ -235,11 +253,15 @@ def generate_structures(mol_file: str, cfg: Config, n: int,
             # Volume close to suggestion
             vol = random.uniform(vol_t * 0.9, vol_t * 1.1)
             vol = np.clip(vol, vol_min * 0.85, vol_max * 1.2)
-            atoms, sg, exp = _attempt(sg, vol, beta_override)
+            an_t = suggestion.get('anisotropy') if cfg.gp_anisotropy else None
+            atoms, sg, exp = _attempt(sg, vol, beta_override, an_t)
             if atoms is None:
                 continue
+            source = f'biased_sg{sg}_b{beta_t:.0f}' if beta_t else f'biased_sg{sg}'
+            if an_t is not None:
+                source += f'_an{an_t:.1f}'
             structures.append({'atoms': atoms, 'space_group': sg,
-                               'source': f'biased_sg{sg}_b{beta_t:.0f}' if beta_t else f'biased_sg{sg}',
+                               'source': source,
                                'expansion': exp})
             count_biased += 1
 

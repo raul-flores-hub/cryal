@@ -412,7 +412,8 @@ def run(cfg: Config):
         elif cfg.use_chpi_optimizer:
             logger.warning("CH-pi optimizer requested but RDKit not available — disabled")
 
-        gp = GPSurrogate(kernel_type=cfg.gp_kernel, n_restarts=cfg.gp_n_restarts)
+        gp = GPSurrogate(kernel_type=cfg.gp_kernel, n_restarts=cfg.gp_n_restarts,
+                         use_anisotropy=cfg.gp_anisotropy)
         suggestions = None
 
         # ====================================================================
