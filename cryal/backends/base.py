@@ -110,7 +110,7 @@ class EnergyBackend(ABC):
 
     Attributes
     ----------
-    name    : str — the value of `energyBackend` in cryal.in that selects it
+    name    : str — the value of `backend.engine` in cryal.toml that selects it
     aliases : tuple — alternative spellings accepted for `name`
     """
 
@@ -275,7 +275,7 @@ class EnergyBackend(ABC):
         if limit is not None and energy > limit:
             return self._reject(
                 logger, f"unrealistic energy {energy:.2f} eV, above the "
-                        f"energySanityMax bound of {limit}")
+                        f"backend.energy_sanity_max bound of {limit}")
 
         # Molecular integrity: did the relaxation break the molecule?
         if getattr(self.cfg, "check_molecular_integrity", False) and ref_bonds:

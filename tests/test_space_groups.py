@@ -123,10 +123,11 @@ class TestAnisotropyWithEqualAxes(unittest.TestCase):
 class TestConfigRejectsUnsupportedGroups(unittest.TestCase):
 
     def _load(self, groups, weights):
-        fd, path = tempfile.mkstemp(suffix="_cryal.in")
+        table = ", ".join(f"{g} = {w}" for g, w in zip(groups.split(), weights.split()))
+        fd, path = tempfile.mkstemp(suffix="_cryal.toml")
         with os.fdopen(fd, "w") as f:
-            f.write("% GENERAL\nmoleculeFile = examples/benzene.xyz\nZ = 4\n"
-                    f"% SPACE_GROUPS\nspaceGroups = {groups}\nsgWeights = {weights}\n")
+            f.write('[general]\nmolecule = "examples/benzene.xyz"\nZ = 4\n'
+                    f"[space_groups]\nweights = {{ {table} }}\n")
         try:
             return load_config(path)
         finally:
@@ -142,7 +143,7 @@ class TestConfigRejectsUnsupportedGroups(unittest.TestCase):
     def test_numbers_outside_1_230_are_refused(self):
         for groups in ("14 231", "0 14"):
             with self.subTest(groups=groups):
-                with self.assertRaisesRegex(ValueError, "not space groups"):
+                with self.assertRaisesRegex(ValueError, "not a space group"):
                     self._load(groups, "1 1")
 
 

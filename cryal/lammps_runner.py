@@ -25,7 +25,7 @@ were told to call:
 
 evaluate_structure() below is exactly the LAMMPS backend, gates included, so
 code written against v1.0.0 behaves as it did. New code should go through
-`cryal.backends.get_backend(cfg)` instead, which honours `energyBackend`.
+`cryal.backends.get_backend(cfg)` instead, which honours `backend.engine`.
 """
 
 from .backends.base import get_reference_bonds, check_molecular_integrity
@@ -44,7 +44,7 @@ def evaluate_structure(atoms, cfg: Config, step_dir: str,
 
         LammpsMaceBackend(cfg).evaluate(atoms, step_dir, ref_bonds, mol_size)
 
-    and unaffected by `energyBackend` — it is the LAMMPS path by definition.
+    and unaffected by `backend.engine` — it is the LAMMPS path by definition.
 
     Returns (relaxed_atoms, energy_eV) or (None, None) on failure.
     """

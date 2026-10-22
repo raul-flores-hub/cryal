@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The gpAnisotropy option: an eighth GP feature (longest/shortest axis) that
+"""The gp.anisotropy option: an eighth GP feature (longest/shortest axis) that
 the GP-biased half of each batch reproduces.
 
 The contract that matters most is that it is OFF unless asked for: every
@@ -35,9 +35,9 @@ from cryal.structure_gen import random_lattice_for_sg
 
 
 def _load(extra=""):
-    fd, path = tempfile.mkstemp(suffix="_cryal.in")
+    fd, path = tempfile.mkstemp(suffix="_cryal.toml")
     with os.fdopen(fd, "w") as f:
-        f.write("% GENERAL\nmoleculeFile = examples/benzene.xyz\nZ = 4\n" + extra)
+        f.write('[general]\nmolecule = "examples/benzene.xyz"\nZ = 4\n' + extra)
     try:
         return load_config(path)
     finally:
@@ -66,13 +66,13 @@ class TestOffByDefault(unittest.TestCase):
         self.assertFalse(_load().gp_anisotropy)
 
     def test_key_switches_it_on(self):
-        self.assertTrue(_load("% GP\ngpAnisotropy = true\n").gp_anisotropy)
+        self.assertTrue(_load("[gp]\nanisotropy = true\n").gp_anisotropy)
 
     def test_seven_features_when_off(self):
         self.assertEqual(len(features_from_record(_records(1)[0])), 7)
 
     def test_default_sampler_draws_the_same_numbers_as_before(self):
-        # The pre-gpAnisotropy monoclinic branch, written out by hand.
+        # The pre-gp.anisotropy monoclinic branch, written out by hand.
         cfg = Config()
         random.seed(7)
         got = random_lattice_for_sg(14, 2700.0, cfg)

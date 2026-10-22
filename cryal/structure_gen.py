@@ -19,7 +19,7 @@ volume targeting.
 Key design (blind search):
   - Volume range estimated from molecular weight + physical density bounds.
     No experimental structure knowledge is used.
-  - Beta angle for monoclinic SGs: uniform in [betaMin, betaMax] by default.
+  - Beta angle for monoclinic SGs: uniform in monoclinic_beta.range by default.
     The GP will discover which beta values are energetically favorable.
   - If PyXtal cannot place molecules at the target volume, the cell is expanded
     in small steps (VOLUME_EXPANSION_FACTORS) until placement succeeds.
@@ -109,7 +109,7 @@ def random_lattice_for_sg(sg: int, volume: float, cfg: Config,
     favoring moderately anisotropic cells while allowing a wide range.
     All axes are guaranteed >= cfg.min_cell_axis.
 
-    anisotropy_target (gpAnisotropy): longest/shortest axis ratio to
+    anisotropy_target (gp.anisotropy): longest/shortest axis ratio to
     reproduce, within +-10 %, instead of the log-normal ratios. A cubic cell
     has no free ratio and ignores it.
 

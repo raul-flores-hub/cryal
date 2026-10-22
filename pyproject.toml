@@ -22,7 +22,7 @@ name = "cryal"
 dynamic = ["version"]
 description = "Blind crystal structure prediction by Bayesian active learning (reference implementation of BACH)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"   # tomllib, which reads cryal.toml, is standard from 3.11
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Raúl Rodolfo Flores Mena" }]

@@ -388,7 +388,7 @@ def run(cfg: Config):
         # and a different potential's zero of energy can make it reject
         # everything silently.
         logger.info(f"  energies above {cfg.energy_sanity_max:.1f} eV count "
-                    "as a failed relaxation (energySanityMax)")
+                    "as a failed relaxation (backend.energy_sanity_max)")
 
     ref_bonds = get_reference_bonds(cfg.molecule_file,
                                      cfg.integrity_max_bond_ratio) \
@@ -478,7 +478,7 @@ def run(cfg: Config):
 
             # --- Train GP ---
             if not cfg.use_gp:
-                logger.info("GP disabled (useGP = false) — candidates generated "
+                logger.info("GP disabled (gp.enabled = false) — candidates generated "
                             "without EI bias")
                 suggestions = None
             elif len(db) >= 5:

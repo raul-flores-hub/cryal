@@ -18,7 +18,7 @@ A rejected candidate leaves no record but a line in the log -- there is no row
 in the database to go back to -- so that line is the only thing standing
 between "this search is going badly" and "this search is misconfigured".
 
-The case these tests exist for is `aseMaxSteps`. A relaxation that runs out of
+The case these tests exist for is `relaxation.max_steps`. A relaxation that runs out of
 steps is discarded, correctly: it was not evaluated at a minimum. But the
 budget does not carry between engines -- from the same geometries MACE
 converged in about 25 steps where UMA needed 39 to 582 -- so a value brought
@@ -94,7 +94,7 @@ class TestCycleReport(unittest.TestCase):
         kept, records = self._cycle(1, 2, first_shift=1.0)
         self.assertEqual(kept, 0)
         lines = [r.getMessage() for r in self._at_least(records, logging.INFO)]
-        self.assertTrue(any("FAILED" in ln and "aseMaxSteps" in ln
+        self.assertTrue(any("FAILED" in ln and "relaxation.max_steps" in ln
                             for ln in lines), lines)
 
     def test_the_cycle_warns_once_however_many_structures_it_lost(self):
@@ -106,7 +106,7 @@ class TestCycleReport(unittest.TestCase):
                                                            logging.WARNING)]
         self.assertEqual(len(warnings), 1, warnings)
         self.assertIn("4 of 4", warnings[0])
-        self.assertIn("aseMaxSteps", warnings[0])
+        self.assertIn("relaxation.max_steps", warnings[0])
 
     def test_each_cycle_reports_its_own_losses(self):
         # The tally is read at the end of a cycle and starts again: a cycle

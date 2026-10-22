@@ -15,9 +15,10 @@
 """
 cli.py — the command line, as `cryal` and as `python run_cryal.py`.
 
-    cryal                    # reads cryal.in in the current directory
-    cryal my_run.in          # reads a custom input file
+    cryal                    # reads cryal.toml in the current directory
+    cryal my_run.toml        # reads a custom input file
     cryal --resume           # continue an interrupted run from its output_dir
+    cryal convert OLD [NEW]  # turn an old-format input into cryal.toml
 
 This module holds what `run_cryal.py` used to hold, so that installing the
 package provides a `cryal` command. The script at the top of the repository
@@ -36,13 +37,41 @@ def usage() -> str:
         prog = f"python {prog}"
     return f"""CrYAL — Crystal Structure Prediction via Active Learning
 
-usage: {prog} [cryal.in] [--resume] [--version]
+usage: {prog} [cryal.toml] [--resume] [--version]
+       {prog} convert OLD_INPUT [cryal.toml]
 
-  cryal.in      configuration file (default: cryal.in in the current directory)
-  --resume, -r  continue an interrupted run from its outputDir
+  cryal.toml    configuration file (default: cryal.toml in the current directory)
+  --resume, -r  continue an interrupted run from its general.output_dir
   --version     print the version and exit
   --help, -h    print this message and exit
+
+  convert       write the cryal.toml that means the same run as an input in
+                the old format (% SECTION headers, INPUT.txt or cryal.in);
+                prints it when no output file is given
 """
+
+
+def convert_main(args) -> int:
+    """`cryal convert OLD [NEW]`: old-format input -> cryal.toml."""
+    if not 1 <= len(args) <= 2:
+        print(usage())
+        return 1
+    from .legacy import convert
+    try:
+        text = convert(args[0])
+    except (FileNotFoundError, ValueError) as e:
+        print(f"ERROR: {e}")
+        return 1
+    if len(args) == 1:
+        sys.stdout.write(text)
+        return 0
+    if os.path.exists(args[1]):
+        print(f"ERROR: {args[1]} already exists; not overwriting it")
+        return 1
+    with open(args[1], "w") as f:
+        f.write(text)
+    print(f"Wrote {args[1]} from {args[0]}")
+    return 0
 
 
 def main(argv=None):
@@ -52,16 +81,19 @@ def main(argv=None):
         print(usage())
         return 0
 
+    if argv and argv[0] == "convert":
+        return convert_main(argv[1:])
+
     if "--version" in argv:
         from . import __version__
         print(f"CrYAL {__version__}")
         return 0
 
     # --resume can be passed anywhere on the command line; it forces
-    # continuation of an existing run regardless of the cryal.in setting.
+    # continuation of an existing run regardless of the cryal.toml setting.
     args = [a for a in argv if a not in ("--resume", "-r")]
     resume_flag = any(a in ("--resume", "-r") for a in argv)
-    input_file = args[0] if args else "cryal.in"
+    input_file = args[0] if args else "cryal.toml"
 
     if not os.path.exists(input_file):
         print(f"ERROR: Input file not found: {input_file}")

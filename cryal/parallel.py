@@ -60,13 +60,13 @@ repeatedly is retired and the run continues with fewer slots. Only the
 structure-level verdict — relaxation failed, integrity rejected — comes back
 as a normal `(None, None)`, exactly as in a serial run.
 
-Configuration (cryal.in)
-=========================
-    % PARALLEL
-    useParallel        = true
-    parallelWorkers    = raul@192.168.1.11:4  raul@192.168.1.12:2
-    parallelLocalSlots = 2
-    parallelRemoteDir  = ~/.cryal_work
+Configuration (cryal.toml)
+===========================
+    [parallel]
+    enabled     = true
+    workers     = ["raul@192.168.1.11:4", "raul@192.168.1.12:2"]
+    local_slots = 2
+    remote_dir  = "~/.cryal_work"
 """
 
 import os
@@ -154,7 +154,7 @@ class Worker:
     @classmethod
     def parse(cls, spec: str, default_python: str = "python3") -> "Worker":
         """
-        Read one entry of `parallelWorkers`.
+        Read one entry of `parallel.workers`.
 
             user@host              one slot on that machine
             user@host:4            four slots
@@ -205,7 +205,7 @@ class Worker:
 
 
 def parse_workers(specs, default_python: str = "python3") -> List[Worker]:
-    """Parse `parallelWorkers`, merging any duplicate entry for one machine."""
+    """Parse `parallel.workers`, merging any duplicate entry for one machine."""
     workers: List[Worker] = []
     for spec in specs:
         w = Worker.parse(spec, default_python)
@@ -227,7 +227,7 @@ def runs_entirely_on_workers(cfg) -> bool:
     failed backend check is fatal here or merely recorded.
 
     `local` in the worker list is the more specific statement and wins over
-    parallelLocalSlots, exactly as in `WorkerPool.start`.
+    parallel.local_slots, exactly as in `WorkerPool.start`.
     """
     if not getattr(cfg, "use_parallel", False):
         return False
@@ -369,7 +369,7 @@ class WorkerPool:
 
         # The server is a worker too. It can be named in the
         # list as `local:N`, which is the more specific statement and wins;
-        # parallelLocalSlots is the shorthand for when it is not named.
+        # parallel.local_slots is the shorthand for when it is not named.
         local_slots = int(getattr(self.cfg, "parallel_local_slots", 1) or 0)
         if not any(w.is_local for w in workers) and local_slots > 0:
             workers.insert(0, Worker(label="local", slots=local_slots))
@@ -379,7 +379,7 @@ class WorkerPool:
         for w in workers:
             if w.is_local and w.slots > 1 and not getattr(self.backend, "thread_safe", False):
                 self.logger.warning(
-                    f"parallelLocalSlots={w.slots} but the '{self.backend.name}' "
+                    f"parallel.local_slots = {w.slots} but the '{self.backend.name}' "
                     "backend is not safe to run concurrently in one process "
                     "(it keeps state between relaxations) — using 1 local slot. "
                     "Remote workers are unaffected: those are separate processes.")
@@ -835,7 +835,7 @@ def _require_backend_here(cfg, why: str) -> None:
         f"{why}, so evaluation would fall back to this machine — but it cannot "
         f"run the '{getattr(cfg, 'energy_backend', '?')}' backend: {error}\n"
         "This run was configured to relax everything on its workers "
-        "(parallelLocalSlots = 0), which is why that was not fatal at startup. "
+        "(parallel.local_slots = 0), which is why that was not fatal at startup. "
         "Fix the workers, or install the backend here as well.")
 
 
@@ -843,7 +843,7 @@ def build_pool(cfg, backend, logger) -> Optional[WorkerPool]:
     """
     The pool for this run, or None when evaluation stays serial.
 
-    Returns None when `useParallel` is off, and also when the configuration
+    Returns None when `parallel.enabled` is off, and also when the configuration
     resolves to a single slot: one slot through the pool is the serial path
     with extra machinery in the way, and the caller's loop is clearer.
     """

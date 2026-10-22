@@ -15,7 +15,7 @@
 """UMA as a named backend, and the one thing it must not let you do silently.
 
 UMA is an ASE calculator, so the `ase` backend could in principle drive it.
-It gets a name of its own because of `umaTask`: each head was trained on a
+It gets a name of its own because of `backend.uma.task`: each head was trained on a
 different domain and each has its own zero of energy -- for one periodic
 C50Au4 cell, `omat` gives -466.55 eV and `oc20` -447.06 eV. A run that mixes
 two heads produces numbers that are not comparable, and no inspection of the
@@ -78,10 +78,11 @@ class TestConfig(unittest.TestCase):
     def test_keys_are_parsed(self):
         import os, tempfile
         from cryal.config import load_config
-        text = ("% GENERAL\nmoleculeFile = examples/benzene.xyz\nZ = 4\n"
-                "energyBackend = uma\numaModel = uma-s-1p1\numaTask = omc\n"
-                "umaDevice = cpu\numaInferenceSettings = default\n")
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        text = ('[general]\nmolecule = "examples/benzene.xyz"\nZ = 4\n'
+                '[backend]\nengine = "uma"\n'
+                '[backend.uma]\nmodel = "uma-s-1p1"\ntask = "omc"\n'
+                'device = "cpu"\ninference_settings = "default"\n')
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
             f.write(text); path = f.name
         try:
             if not HAVE_FAIRCHEM:

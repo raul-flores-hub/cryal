@@ -160,7 +160,7 @@ class TestDependencies(unittest.TestCase):
         # RDKit used to be in this list and should not have been: it is not a
         # heavy engine dependency but the CH-pi optimizer's, and that optimizer
         # is on by default, so leaving it undeclared meant a clean
-        # `pip install cryal` raised ImportError on the shipped cryal.in.
+        # `pip install cryal` raised ImportError on the shipped cryal.toml.
         for name in ("torch", "mace-torch", "pymatgen"):
             self.assertNotIn(name, self.declared)
 
@@ -174,15 +174,16 @@ class TestShippedExample(unittest.TestCase):
     """
 
     def setUp(self):
-        with open(os.path.join(ROOT, "cryal.in")) as f:
-            self.shipped_input = f.read()
+        with open(os.path.join(ROOT, "cryal.toml"), "rb") as f:
+            self.shipped_input = tomllib.load(f)
 
-    def _value(self, key):
-        for line in self.shipped_input.splitlines():
-            line = line.split("#")[0].strip()
-            if line.lower().startswith(key.lower()) and "=" in line:
-                return line.partition("=")[2].strip()
-        self.fail(f"{key} not found in cryal.in")
+    def _value(self, path):
+        value = self.shipped_input
+        for part in path.split("."):
+            if part not in value:
+                self.fail(f"{path} not found in cryal.toml")
+            value = value[part]
+        return value
 
     def test_the_example_molecule_exists_and_is_a_valid_xyz(self):
         path = os.path.join(ROOT, "examples", "benzene.xyz")
@@ -194,7 +195,7 @@ class TestShippedExample(unittest.TestCase):
         self.assertEqual(declared, 12)
 
     def test_the_example_input_points_at_the_example_molecule(self):
-        molecule = self._value("moleculeFile")
+        molecule = self._value("general.molecule")
         self.assertTrue(molecule.startswith("examples/"), molecule)
         self.assertTrue(os.path.exists(os.path.join(ROOT, molecule)))
 
@@ -205,8 +206,8 @@ class TestShippedExample(unittest.TestCase):
     def test_specorder_matches_the_lammps_script(self):
         # A mismatch here is a run that dies on the first structure: LAMMPS
         # maps atom types to elements by position in both lists.
-        spec = self._value("specOrder").split()
-        with open(os.path.join(ROOT, self._value("lammpsInput"))) as f:
+        spec = self._value("backend.lammps.species")
+        with open(os.path.join(ROOT, self._value("backend.lammps.input"))) as f:
             script = f.read()
         for line in script.splitlines():
             line = line.split("#")[0].strip()
@@ -217,8 +218,8 @@ class TestShippedExample(unittest.TestCase):
             self.fail("no pair_coeff line in the LAMMPS script")
 
     def test_the_masses_cover_every_atom_type(self):
-        spec = self._value("specOrder").split()
-        with open(os.path.join(ROOT, self._value("lammpsInput"))) as f:
+        spec = self._value("backend.lammps.species")
+        with open(os.path.join(ROOT, self._value("backend.lammps.input"))) as f:
             masses = [l for l in f.read().splitlines()
                       if l.split("#")[0].strip().startswith("mass ")]
         self.assertEqual(len(masses), len(spec))

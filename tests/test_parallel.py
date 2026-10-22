@@ -47,7 +47,7 @@ from ase import Atoms
 
 from cryal.backends import get_backend
 from cryal.backends.base import EnergyBackend
-from cryal.config import Config, load_config, parse_input
+from cryal.config import Config, load_config
 from cryal.parallel import (Worker, WorkerError, WorkerPool, atoms_from_dict,
                             atoms_to_dict, build_pool, parse_workers,
                             runs_entirely_on_workers)
@@ -119,7 +119,7 @@ class RecordingBackend(EnergyBackend):
 
 
 class TestWorkerSpec(unittest.TestCase):
-    """`parallelWorkers` is the whole user interface to this feature."""
+    """`parallel.workers` is the whole user interface to this feature."""
 
     def test_user_host_slots(self):
         w = Worker.parse("raul@192.168.1.11:4")
@@ -428,7 +428,7 @@ class TestRemoteWorker(unittest.TestCase):
         self.assertEqual(self._run(), 3)
         with open(result_path) as f:
             result = json.load(f)
-        self.assertIn("aseMaxSteps", result["reason"])
+        self.assertIn("relaxation.max_steps", result["reason"])
 
     def test_the_workers_step_count_travels_with_its_verdict(self):
         # The relaxation happened over there, but it spent this run's budget,
@@ -488,7 +488,7 @@ class TestRemoteVerdictsReachTheServer(unittest.TestCase):
 
     REJECTED = {
         "ok": False,
-        "reason": ("not converged: spent the aseMaxSteps budget of 10 with "
+        "reason": ("not converged: spent the relaxation.max_steps budget of 10 with "
                    "fmax 1.000 eV/Å still above the 0.05 target"),
         "relax": {"converged": 0, "exhausted": 1, "max_steps_used": 0},
     }
@@ -530,7 +530,7 @@ class TestRemoteVerdictsReachTheServer(unittest.TestCase):
 
     def test_a_workers_reason_reads_like_a_local_one(self):
         self._evaluate(self.REJECTED)
-        self.assertIn("aseMaxSteps", self.backend.last_rejection)
+        self.assertIn("relaxation.max_steps", self.backend.last_rejection)
 
     def test_a_worker_one_version_behind_is_not_a_crash(self):
         # It answers without the fields this version added; that costs the
@@ -636,7 +636,7 @@ class TestBackendHooks(unittest.TestCase):
                          {"lammps_input": "in_v3.lammps"})
 
     def test_lammps_names_the_executable_not_its_flags(self):
-        # lammpsCommand carries the Kokkos flags MACE needs; `command -v` must
+        # backend.lammps.command carries the Kokkos flags MACE needs; `command -v` must
         # be given the executable alone.
         from cryal.backends.lammps_mace import LammpsMaceBackend
         cfg = Config(lammps_command="lmp -k on g 1 -sf kk -pk kokkos newton on")
@@ -657,13 +657,13 @@ class TestBackendHooks(unittest.TestCase):
 class TestConfiguration(unittest.TestCase):
 
     MINIMAL = """
-% GENERAL
-moleculeFile = examples/benzene.xyz
+[general]
+molecule = "examples/benzene.xyz"
 Z = 4
 """
 
     def _load(self, extra=""):
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
             f.write(self.MINIMAL + extra)
             path = f.name
         try:
@@ -677,15 +677,15 @@ Z = 4
         self.assertEqual(cfg.parallel_workers, [])
 
     def test_workers_are_read_as_a_list(self):
-        cfg = self._load("useParallel = true\n"
-                         "parallelWorkers = raul@node1:4 raul@node2:2\n")
+        cfg = self._load("[parallel]\nenabled = true\n"
+                         'workers = ["raul@node1:4", "raul@node2:2"]\n')
         self.assertTrue(cfg.use_parallel)
         self.assertEqual(cfg.parallel_workers, ["raul@node1:4", "raul@node2:2"])
 
     def test_a_malformed_worker_fails_at_load_time(self):
         # Not at candidate 40, three hours in.
         with self.assertRaises(ValueError):
-            self._load("useParallel = true\nparallelWorkers = raul@node1:four\n")
+            self._load('[parallel]\nenabled = true\nworkers = ["raul@node1:four"]\n')
 
     def test_build_pool_returns_none_when_off(self):
         cfg = self._load()
@@ -693,7 +693,7 @@ Z = 4
 
     def test_build_pool_declines_a_single_slot(self):
         # One slot through the pool is the serial path with machinery in the way.
-        cfg = self._load("useParallel = true\nparallelLocalSlots = 1\n")
+        cfg = self._load("[parallel]\nenabled = true\nlocal_slots = 1\n")
         self.assertIsNone(build_pool(cfg, RecordingBackend(), quiet_logger()))
 
 
@@ -712,14 +712,14 @@ class TestCoordinatorWithoutTheBackend(unittest.TestCase):
 
     # An import that cannot succeed anywhere, so the backend check fails
     # without depending on what is installed on the machine running the tests.
-    BROKEN = ("energyBackend = ase\n"
-              "aseCalculator = no.such.module.at.all\n")
-    REMOTE = ("useParallel = true\n"
-              "parallelWorkers = raul@node1:4\n"
-              "parallelLocalSlots = 0\n")
+    BROKEN = ('[backend]\nengine = "ase"\n'
+              '[backend.ase]\ncalculator = "no.such.module.at.all"\n')
+    REMOTE = ("[parallel]\nenabled = true\n"
+              'workers = ["raul@node1:4"]\n'
+              "local_slots = 0\n")
 
     def _load(self, extra):
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
             f.write(TestConfiguration.MINIMAL + extra)
             path = f.name
         try:
@@ -735,16 +735,16 @@ class TestCoordinatorWithoutTheBackend(unittest.TestCase):
 
     def test_the_check_still_bites_when_this_machine_relaxes(self):
         with self.assertRaises(Exception):
-            self._load(self.REMOTE.replace("parallelLocalSlots = 0",
-                                           "parallelLocalSlots = 2") + self.BROKEN)
+            self._load(self.REMOTE.replace("local_slots = 0",
+                                           "local_slots = 2") + self.BROKEN)
 
     def test_naming_local_in_the_list_counts_as_relaxing_here(self):
-        # `local` in parallelWorkers is the more specific statement and wins
-        # over parallelLocalSlots, so this server does relax after all.
+        # `local` in parallel.workers is the more specific statement and wins
+        # over parallel.local_slots, so this server does relax after all.
         with self.assertRaises(Exception):
-            self._load("useParallel = true\n"
-                       "parallelWorkers = local:2 raul@node1:4\n"
-                       "parallelLocalSlots = 0\n" + self.BROKEN)
+            self._load("[parallel]\nenabled = true\n"
+                       'workers = ["local:2", "raul@node1:4"]\n'
+                       "local_slots = 0\n" + self.BROKEN)
 
     def test_a_serial_run_is_unaffected(self):
         with self.assertRaises(Exception):
@@ -786,39 +786,53 @@ class TestCoordinatorWithoutTheBackend(unittest.TestCase):
 
 
 class TestInputKeysAreRead(unittest.TestCase):
-    """Every key in cryal.in must reach the Config.
+    """Every key in cryal.toml must reach the Config, and every setting must
+    be reachable from cryal.toml.
 
-    A key the parser looks up under a slightly different name is read as its
-    default, silently, for the life of the project: the value in the file is
-    simply ignored. That failure has no symptom, so it gets a test.
+    A key the loader maps to a misspelt field would be stored on the Config
+    and never read, and a setting the schema forgets can only ever be its
+    default. Neither failure has a symptom, so they get a test. (A key that
+    is not in the schema at all is refused at load time.)
     """
 
-    def test_no_key_in_the_shipped_input_is_ignored(self):
-        import cryal.config as config_module
+    # Computed after load, not set by the user.
+    DERIVED = {"mol_weight"}
 
+    def _schema_fields(self):
+        from cryal.config import _SCHEMA
+        for section, keys in _SCHEMA.items():
+            for key, (fields, _) in keys.items():
+                for f in (fields if isinstance(fields, tuple) else (fields,)):
+                    yield f"{section}.{key}", f
+
+    def test_every_key_fills_a_real_field(self):
+        import dataclasses
+        real = {f.name for f in dataclasses.fields(Config)}
+        bad = sorted(p for p, f in self._schema_fields() if f not in real)
+        self.assertEqual(bad, [], f"keys that fill no Config field: {bad}")
+
+    def test_every_setting_has_a_key(self):
+        import dataclasses
+        settable = {f.name for f in dataclasses.fields(Config)
+                    if not f.name.startswith("_")} - self.DERIVED
+        missing = sorted(settable - {f for _, f in self._schema_fields()})
+        self.assertEqual(missing, [], f"settings cryal.toml cannot set: {missing}")
+
+    def test_every_old_key_converts_to_a_real_key(self):
+        from cryal.config import _SCHEMA
+        from cryal.legacy import _KEYS
+        bad = sorted(old for old, (section, key, _) in _KEYS.items()
+                     if key not in _SCHEMA.get(section, {}))
+        self.assertEqual(bad, [], f"old keys converted to nothing: {bad}")
+
+    def test_the_shipped_input_loads(self):
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        input_path = os.path.join(here, "cryal.in")
-        if not os.path.exists(input_path):
-            self.skipTest("cryal.in is not part of this checkout")
-
-        declared = set(parse_input(input_path))
-
-        looked_up = set()
-        original = config_module._get
-
-        def spy(raw, key, default=None):
-            looked_up.add(key.lower())
-            return original(raw, key, default)
-
-        config_module._get = spy
+        cwd = os.getcwd()
+        os.chdir(here)
         try:
-            load_config(input_path)
+            load_config("cryal.toml")
         finally:
-            config_module._get = original
-
-        ignored = sorted(declared - looked_up)
-        self.assertEqual(ignored, [],
-                         f"cryal.in sets keys that load_config never reads: {ignored}")
+            os.chdir(cwd)
 
 
 if __name__ == "__main__":

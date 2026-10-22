@@ -17,7 +17,7 @@ gp_model.py — Gaussian Process surrogate model and Expected Improvement.
 
 The GP learns the mapping:
   features = [a, b, c, alpha, beta, gamma, density]  →  energy (eV)
-With gpAnisotropy = true an eighth feature is appended: the anisotropy
+With gp.anisotropy = true an eighth feature is appended: the anisotropy
 (longest / shortest cell axis). The GP already sees a, b and c, but an ARD
 kernel models one length scale per axis and represents a ratio between axes
 poorly; the explicit feature lets it learn "elongated cells are favoured"

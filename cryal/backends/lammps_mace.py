@@ -108,7 +108,7 @@ class LammpsMaceBackend(EnergyBackend):
     @classmethod
     def validate_config(cls, cfg):
         if not os.path.exists(cfg.lammps_input):
-            raise FileNotFoundError(f"lammpsInput not found: {cfg.lammps_input}")
+            raise FileNotFoundError(f"backend.lammps.input not found: {cfg.lammps_input}")
 
     @classmethod
     def job_files(cls, cfg) -> dict:
@@ -118,7 +118,7 @@ class LammpsMaceBackend(EnergyBackend):
 
     @classmethod
     def required_commands(cls, cfg) -> list:
-        # lammpsCommand carries the Kokkos flags; the executable is the head.
+        # backend.lammps.command carries the Kokkos flags; the executable is the head.
         command = (getattr(cfg, "lammps_command", "") or "lmp").split()
         return [command[0]] if command else []
 

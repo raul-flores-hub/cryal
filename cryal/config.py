@@ -13,129 +13,25 @@
 # limitations under the License.
 
 """
-config.py — cryal.in parser and configuration container.
+config.py — cryal.toml loader and configuration container.
 
-Parses the cryal.in format (USPEX-like sections):
-  % SECTION_NAME
-  KEY = VALUE   # optional inline comment
+The input is TOML: [tables] group the settings, values carry their own
+types, and the file is read with the standard library's tomllib. Every
+key is checked against the schema below, so a misspelt key or a value of
+the wrong type stops the load with the path of the offending entry,
+instead of leaving a default silently in its place. Files in the format
+CrYAL used before (% SECTION headers) are turned into cryal.toml by
+`cryal convert`; see legacy.py.
 
 Provides a Config dataclass with typed fields and sensible defaults.
-Unknown keys produce a warning; missing required keys raise ValueError.
 """
 
+import difflib
 import os
+import tomllib
 import warnings
-import numpy as np
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-
-
-# ---------------------------------------------------------------------------
-# Parser
-# ---------------------------------------------------------------------------
-
-def parse_input(filepath: str) -> dict:
-    """
-    Parse cryal.in into a flat dict of {key: raw_string_value}.
-    Section names are dropped; keys are case-insensitive (stored lowercase).
-    """
-    raw = {}
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"input file not found: {filepath}")
-
-    with open(filepath) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#') or line.startswith('%'):
-                continue
-            # Remove inline comment
-            if '#' in line:
-                line = line[:line.index('#')].strip()
-            if '=' not in line:
-                continue
-            key, _, value = line.partition('=')
-            raw[key.strip().lower()] = value.strip()
-    return raw
-
-
-def _get(raw, key, default=None):
-    return raw.get(key.lower(), default)
-
-
-def _int(raw, key, default):
-    v = _get(raw, key)
-    return int(v) if v is not None else default
-
-
-def _float(raw, key, default):
-    v = _get(raw, key)
-    return float(v) if v is not None else default
-
-
-def _bool(raw, key, default):
-    v = _get(raw, key)
-    if v is None:
-        return default
-    return v.lower() in ('true', '1', 'yes')
-
-
-def _str(raw, key, default):
-    v = _get(raw, key)
-    return v if v is not None else default
-
-
-def _floatlist(raw, key, default):
-    v = _get(raw, key)
-    if v is None:
-        return default
-    return [float(x) for x in v.split()]
-
-
-def _intlist(raw, key, default):
-    v = _get(raw, key)
-    if v is None:
-        return default
-    return [int(x) for x in v.split()]
-
-
-def _strlist(raw, key, default):
-    v = _get(raw, key)
-    if v is None:
-        return default
-    return v.split()
-
-
-def _optfloat(raw, key, default):
-    """A float, or None when the value spells a disabled check."""
-    v = _get(raw, key)
-    if v is None:
-        return default
-    if v.strip().lower() in ('none', 'off', 'disabled'):
-        return None
-    return float(v)
-
-
-def _kwargs(raw, key, default):
-    """
-    Parse 'name=value name2=value2' into a dict, with values typed by
-    ast.literal_eval when they look like Python literals and left as strings
-    otherwise ('cuda' stays 'cuda', '5.0' becomes 5.0, 'True' becomes True).
-    """
-    v = _get(raw, key)
-    if v is None:
-        return default
-    import ast
-    out = {}
-    for token in v.split():
-        if '=' not in token:
-            warnings.warn(f"{key}: ignoring '{token}' (expected name=value)")
-            continue
-        name, _, value = token.partition('=')
-        try:
-            out[name.strip()] = ast.literal_eval(value)
-        except (ValueError, SyntaxError):
-            out[name.strip()] = value
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +55,7 @@ class Config:
     energy_backend:      str   = "lammps_mace"
     # Total energies above this (eV, whole cell) are treated as a failed
     # relaxation. Only meaningful against a given potential's zero of energy;
-    # 'none' switches the check off.
+    # false in the input switches the check off.
     energy_sanity_max:   Optional[float] = -100.0
 
     # --- BACKEND: lammps_mace ---
@@ -214,9 +110,9 @@ class Config:
     beta_mode:           Optional[float] = None  # only for triangular
 
     # --- GP ---
-    # useGP = false runs the identical workflow with the surrogate switched off:
-    # candidates are generated at random instead of half-biased by Expected
-    # Improvement. It is the ablation control for the Bayesian guidance --
+    # [gp] enabled = false runs the identical workflow with the surrogate
+    # switched off: candidates are generated at random instead of half-biased
+    # by Expected Improvement. It is the ablation control for the Bayesian guidance --
     # same generator, same potential, same relaxation protocol, same stopping
     # rule -- and isolates the contribution of the GP from that of the
     # structure generator.
@@ -226,7 +122,7 @@ class Config:
     # best structures found so far still happens. What is removed is only the
     # Expected-Improvement bias on where new candidates are generated.
     use_gp:              bool  = True
-    # gpAnisotropy: append longest/shortest cell axis to the GP features and
+    # [gp] anisotropy: append longest/shortest cell axis to the GP features and
     # make the GP-biased half of each batch reproduce the suggested
     # anisotropy. Off by default, so every input written before the key
     # existed keeps meaning the 7-feature surrogate it was run with.
@@ -306,146 +202,284 @@ class Config:
         return self.target_volume_max if self.target_volume_max else self._volume_max_computed
 
 
+
+# ---------------------------------------------------------------------------
+# Schema: where each value lives in cryal.toml, and what type it must have
+# ---------------------------------------------------------------------------
+
+def _fail(path, value, what):
+    raise ValueError(f"{path}: expected {what}, got {value!r}")
+
+
+def _str(path, v):
+    return v if isinstance(v, str) else _fail(path, v, "a string")
+
+
+def _int(path, v):
+    ok = isinstance(v, int) and not isinstance(v, bool)
+    return v if ok else _fail(path, v, "an integer")
+
+
+def _float(path, v):
+    ok = isinstance(v, (int, float)) and not isinstance(v, bool)
+    return float(v) if ok else _fail(path, v, "a number")
+
+
+def _bool(path, v):
+    return v if isinstance(v, bool) else _fail(path, v, "true or false")
+
+
+def _list_of(item, what):
+    def conv(path, v):
+        if not isinstance(v, list):
+            _fail(path, v, f"a list of {what}")
+        return [item(f"{path}[{i}]", x) for i, x in enumerate(v)]
+    return conv
+
+
+def _table(path, v):
+    return dict(v) if isinstance(v, dict) else _fail(path, v, "a table { name = value, ... }")
+
+
+def _choice(*options):
+    def conv(path, v):
+        if v not in options:
+            _fail(path, v, " or ".join(repr(o) for o in options))
+        return v
+    return conv
+
+
+_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+
+
+def _log_level(path, v):
+    if not (isinstance(v, str) and v.upper() in _LOG_LEVELS):
+        _fail(path, v, " or ".join(repr(l) for l in _LOG_LEVELS))
+    return v.upper()
+
+
+def _range(path, v):
+    """[low, high] -> (low, high), low <= high."""
+    if not (isinstance(v, list) and len(v) == 2):
+        _fail(path, v, "[low, high]")
+    lo, hi = _float(f"{path}[0]", v[0]), _float(f"{path}[1]", v[1])
+    if lo > hi:
+        raise ValueError(f"{path}: low {lo} is above high {hi}")
+    return lo, hi
+
+
+def _optfloat(path, v):
+    """A number, or false to switch the check off (TOML has no null)."""
+    if v is False:
+        return None
+    if v is True:
+        _fail(path, v, "a number, or false to switch the check off")
+    return _float(path, v)
+
+
+def _sg_weights(path, v):
+    """{ 14 = 36, 2 = 24, ... } -> ([14, 2, ...], [36.0, 24.0, ...]), in file order."""
+    if not isinstance(v, dict) or not v:
+        _fail(path, v, "a table { group = weight, ... } with at least one group")
+    groups, weights = [], []
+    for k, w in v.items():
+        if not (k.isdigit() and 1 <= int(k) <= 230):
+            raise ValueError(f"{path}: {k!r} is not a space group: valid numbers are 1-230")
+        w = _float(f"{path}.{k}", w)
+        if w <= 0:
+            raise ValueError(f"{path}.{k}: weight must be positive, got {w}")
+        groups.append(int(k))
+        weights.append(w)
+    return groups, weights
+
+
+_LIST_STR   = _list_of(_str, "strings")
+_LIST_FLOAT = _list_of(_float, "numbers")
+
+# section -> key -> (Config field, or a tuple of fields the value fills; converter)
+_SCHEMA = {
+    "general": {
+        "molecule":             ("molecule_file", _str),
+        "Z":                    ("Z", _int),
+        "random_seed":          ("random_seed", _int),
+        "output_dir":           ("output_dir", _str),
+        "log_level":            ("log_level", _log_level),
+        "resume":               ("resume", _bool),
+    },
+    "backend": {
+        "engine":               ("energy_backend", _str),
+        "energy_sanity_max":    ("energy_sanity_max", _optfloat),
+    },
+    "backend.lammps": {
+        "input":                ("lammps_input", _str),
+        "command":              ("lammps_command", _str),
+        "species":              ("spec_order", _LIST_STR),
+    },
+    "backend.ase": {
+        "calculator":           ("ase_calculator", _str),
+        "calculator_kwargs":    ("ase_calculator_kwargs", _table),
+    },
+    "backend.uma": {
+        "model":                ("uma_model", _str),
+        "task":                 ("uma_task", _str),
+        "device":               ("uma_device", _str),
+        "inference_settings":   ("uma_inference_settings", _str),
+    },
+    # In-process relaxation, shared by the ase and uma engines.
+    "relaxation": {
+        "optimizer":            ("ase_optimizer", _str),
+        "fmax":                 ("ase_fmax", _float),
+        "max_steps":            ("ase_max_steps", _int),
+        "relax_cell":           ("ase_relax_cell", _bool),
+    },
+    "active_learning": {
+        "cycles":               ("num_cycles", _int),
+        "initial_structures":   ("initial_structures", _int),
+        "structures_per_cycle": ("structures_per_cycle", _int),
+        "pool_size":            ("pool_size", _int),
+        "max_no_improve_cycles": ("max_no_improve_cycles", _int),
+    },
+    "space_groups": {
+        "weights":              (("space_groups", "sg_weights"), _sg_weights),
+    },
+    "volume": {
+        "min":                  ("target_volume_min", _float),
+        "max":                  ("target_volume_max", _float),
+        "density":              (("density_min", "density_max"), _range),
+        "expansion_factors":    ("volume_expansion_factors", _LIST_FLOAT),
+    },
+    "cell": {
+        "min_axis":             ("min_cell_axis", _float),
+    },
+    "monoclinic_beta": {
+        "range":                (("beta_min", "beta_max"), _range),
+        "distribution":         ("beta_distribution", _choice("uniform", "triangular")),
+        "mode":                 ("beta_mode", _float),
+    },
+    "gp": {
+        "enabled":              ("use_gp", _bool),
+        "anisotropy":           ("gp_anisotropy", _bool),
+        "kernel":               ("gp_kernel", _choice("matern25", "rbf")),
+        "n_restarts":           ("gp_n_restarts", _int),
+        "ei_xi":                ("ei_xi", _float),
+        "ei_candidates":        ("num_ei_candidates", _int),
+        "ei_suggestions":       ("num_ei_suggestions", _int),
+    },
+    "chpi": {
+        "enabled":              ("use_chpi_optimizer", _bool),
+        "d_range":              (("d_min", "d_max"), _range),
+        "d_target":             ("d_target", _float),
+        "d_search":             ("d_search", _float),
+        "angle_ch_centroid_min": ("angle_ch_centroid_min", _float),
+        "angle_from_normal_max": ("angle_from_normal_max", _float),
+        "max_iter":             ("max_chpi_iter", _int),
+        "max_no_improve":       ("max_no_improve", _int),
+    },
+    "contacts": {
+        "min_hh":               ("min_hh_distance", _float),
+        "min_heavy":            ("min_heavy_distance", _float),
+        "min_hx":               ("min_hx_distance", _float),
+    },
+    "seeds": {
+        "enabled":              ("use_seeds_folder", _bool),
+        "folder":               ("seeds_folder", _str),
+        "perturbations_per_seed": ("num_perturbations_per_seed", _int),
+        "max_rotation":         ("max_rot_perturb", _float),
+        "max_translation":      ("max_trans_perturb", _float),
+        "fraction_perturbed":   ("frac_mols_perturb", _float),
+    },
+    "integrity": {
+        "enabled":              ("check_molecular_integrity", _bool),
+        "max_bond_ratio":       ("integrity_max_bond_ratio", _float),
+    },
+    "parallel": {
+        "enabled":              ("use_parallel", _bool),
+        "workers":              ("parallel_workers", _LIST_STR),
+        "local_slots":          ("parallel_local_slots", _int),
+        "remote_dir":           ("parallel_remote_dir", _str),
+        "python":               ("parallel_python", _str),
+        "ssh_key":              ("parallel_ssh_key", _str),
+        "ssh_timeout":          ("parallel_ssh_timeout", _int),
+        "task_timeout":         ("parallel_task_timeout", _int),
+        "max_failures":         ("parallel_max_failures", _int),
+        "keep_remote":          ("parallel_keep_remote", _bool),
+        "fetch_on_failure":     ("parallel_fetch_on_failure", _bool),
+        "fetch_step":           ("parallel_fetch_step", _bool),
+    },
+}
+
+
+def _unknown(path: str, section: Optional[str], is_table: bool) -> ValueError:
+    """An unknown key or table, with the nearest real one when there is one."""
+    name = path.rsplit(".", 1)[-1]
+    if is_table:
+        what = "table"
+        homes = [s for s in _SCHEMA if s.rsplit(".", 1)[-1] == name]
+        known = [s.rsplit(".", 1)[-1] for s in _SCHEMA]
+    else:
+        what = f"key in [{section}]" if section else "key outside any table"
+        homes = [s for s, keys in _SCHEMA.items() if name in keys and s != section]
+        known = list(_SCHEMA.get(section, {}))
+    if homes:
+        hint = f"; '{name}' belongs in " + " or ".join(f"[{s}]" for s in homes)
+    else:
+        close = difflib.get_close_matches(name, known, n=1)
+        hint = f"; did you mean '{close[0]}'?" if close else ""
+    return ValueError(f"{path}: unknown {what}{hint}")
+
+
+def _apply(doc: dict, cfg: Config, prefix: str = "") -> None:
+    """Walk the parsed document, typing every value into cfg."""
+    section = prefix.rstrip(".") or None
+    keys = _SCHEMA.get(section, {})
+    for name, value in doc.items():
+        path = prefix + name
+        if isinstance(value, dict) and path in _SCHEMA:
+            _apply(value, cfg, path + ".")
+        elif name in keys:
+            fields, conv = keys[name]
+            converted = conv(path, value)
+            if isinstance(fields, tuple):
+                for f, v in zip(fields, converted):
+                    setattr(cfg, f, v)
+            else:
+                setattr(cfg, fields, converted)
+        elif isinstance(value, dict) and any(s.startswith(path + ".") for s in _SCHEMA):
+            _apply(value, cfg, path + ".")
+        else:
+            raise _unknown(path, section, isinstance(value, dict))
+
+
 # ---------------------------------------------------------------------------
 # Factory function
 # ---------------------------------------------------------------------------
 
-def load_config(filepath: str = "cryal.in") -> Config:
+def load_config(filepath: str = "cryal.toml") -> Config:
     """
-    Load and validate configuration from cryal.in.
-    Auto-computes volume range from density range if 'auto' is specified.
+    Load and validate configuration from cryal.toml.
+    Without [volume] min/max, the volume range comes from the density range.
     """
-    raw = parse_input(filepath)
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"input file not found: {filepath}")
+    with open(filepath, "rb") as f:
+        try:
+            doc = tomllib.load(f)
+        except tomllib.TOMLDecodeError as exc:
+            from .legacy import looks_legacy
+            if looks_legacy(filepath):
+                raise ValueError(
+                    f"{filepath} is in the old pre-TOML format (% SECTION, "
+                    f"key = value); convert it with: cryal convert {filepath} "
+                    "cryal.toml") from exc
+            raise ValueError(f"{filepath}: {exc}") from exc
+
     cfg = Config()
-
-    # GENERAL
-    cfg.molecule_file     = _str(raw, "moleculefile", cfg.molecule_file)
-    cfg.Z                 = _int(raw, "z", cfg.Z)
-    cfg.random_seed       = _int(raw, "randomseed", cfg.random_seed)
-    cfg.output_dir        = _str(raw, "outputdir", cfg.output_dir)
-    cfg.log_level         = _str(raw, "loglevel", cfg.log_level)
-    cfg.resume            = _bool(raw, "resume", cfg.resume)
-
-    # ENERGY BACKEND
-    cfg.energy_backend    = _str(raw, "energybackend", cfg.energy_backend)
-    cfg.energy_sanity_max = _optfloat(raw, "energysanitymax", cfg.energy_sanity_max)
-
-    # BACKEND: lammps_mace
-    cfg.lammps_input      = _str(raw, "lammpsinput", cfg.lammps_input)
-    cfg.lammps_command    = _str(raw, "lammpscommand", cfg.lammps_command)
-    cfg.spec_order        = _strlist(raw, "specorder", cfg.spec_order)
-
-    # BACKEND: ase
-    cfg.ase_calculator        = _str(raw, "asecalculator", cfg.ase_calculator)
-    cfg.ase_calculator_kwargs = _kwargs(raw, "asecalculatorkwargs",
-                                        cfg.ase_calculator_kwargs)
-    cfg.ase_optimizer         = _str(raw, "aseoptimizer", cfg.ase_optimizer)
-    cfg.ase_fmax              = _float(raw, "asefmax", cfg.ase_fmax)
-    cfg.ase_max_steps         = _int(raw, "asemaxsteps", cfg.ase_max_steps)
-    cfg.ase_relax_cell        = _bool(raw, "aserelaxcell", cfg.ase_relax_cell)
-
-    # BACKEND: uma
-    cfg.uma_model   = _str(raw, "umamodel", cfg.uma_model)
-    cfg.uma_task    = _str(raw, "umatask", cfg.uma_task)
-    cfg.uma_device  = _str(raw, "umadevice", cfg.uma_device)
-    cfg.uma_inference_settings = _str(raw, "umainferencesettings",
-                                      cfg.uma_inference_settings)
-
-    # ACTIVE LEARNING
-    cfg.num_cycles            = _int(raw, "numcycles", cfg.num_cycles)
-    cfg.initial_structures    = _int(raw, "initialstructures", cfg.initial_structures)
-    cfg.structures_per_cycle  = _int(raw, "structurespercycle", cfg.structures_per_cycle)
-    cfg.pool_size             = _int(raw, "poolsize", cfg.pool_size)
-    cfg.max_no_improve_cycles = _int(raw, "maxnoimprovecycles", cfg.max_no_improve_cycles)
-
-    # SPACE GROUPS
-    cfg.space_groups = _intlist(raw, "spacegroups", cfg.space_groups)
-    cfg.sg_weights   = _floatlist(raw, "sgweights", cfg.sg_weights)
-    if len(cfg.sg_weights) != len(cfg.space_groups):
-        raise ValueError("spaceGroups and sgWeights must have the same length")
-    unsupported = [sg for sg in cfg.space_groups if not 1 <= sg <= 230]
-    if unsupported:
-        raise ValueError(f"spaceGroups {unsupported} are not space groups: "
-                         "valid numbers are 1-230")
-
-    # VOLUME
-    vol_min_raw = _str(raw, "targetvolumemin", "auto")
-    vol_max_raw = _str(raw, "targetvolumemax", "auto")
-    cfg.target_volume_min = None if vol_min_raw.lower() == "auto" else float(vol_min_raw)
-    cfg.target_volume_max = None if vol_max_raw.lower() == "auto" else float(vol_max_raw)
-    cfg.density_min = _float(raw, "densitymin", cfg.density_min)
-    cfg.density_max = _float(raw, "densitymax", cfg.density_max)
-    cfg.volume_expansion_factors = _floatlist(
-        raw, "volumeexpansionfactors", cfg.volume_expansion_factors)
-
-    # CELL
-    cfg.min_cell_axis = _float(raw, "mincellaxis", cfg.min_cell_axis)
-
-    # BETA
-    cfg.beta_min          = _float(raw, "betamin", cfg.beta_min)
-    cfg.beta_max          = _float(raw, "betamax", cfg.beta_max)
-    cfg.beta_distribution = _str(raw, "betadistribution", cfg.beta_distribution)
-    beta_mode_raw = _str(raw, "betamode", None)
-    cfg.beta_mode = float(beta_mode_raw) if beta_mode_raw else None
+    _apply(doc, cfg)
 
     if cfg.beta_distribution == "triangular" and cfg.beta_mode is None:
-        warnings.warn("betaDistribution=triangular requires betaMode; falling back to uniform")
+        warnings.warn("monoclinic_beta.distribution = triangular requires "
+                      "monoclinic_beta.mode; falling back to uniform")
         cfg.beta_distribution = "uniform"
-
-    # GP
-    cfg.use_gp            = _bool(raw, "usegp", cfg.use_gp)
-    cfg.gp_anisotropy     = _bool(raw, "gpanisotropy", cfg.gp_anisotropy)
-    cfg.gp_kernel         = _str(raw, "gpkernel", cfg.gp_kernel)
-    cfg.gp_n_restarts     = _int(raw, "gpnrestarts", cfg.gp_n_restarts)
-    cfg.ei_xi             = _float(raw, "eixi", cfg.ei_xi)
-    cfg.num_ei_candidates = _int(raw, "numeicandidates", cfg.num_ei_candidates)
-    cfg.num_ei_suggestions= _int(raw, "numeisuggestions", cfg.num_ei_suggestions)
-
-    # CHPI
-    cfg.use_chpi_optimizer    = _bool(raw, "usechpioptimizer", cfg.use_chpi_optimizer)
-    cfg.d_min                 = _float(raw, "dmin", cfg.d_min)
-    cfg.d_max                 = _float(raw, "dmax", cfg.d_max)
-    cfg.d_target              = _float(raw, "dtarget", cfg.d_target)
-    cfg.d_search              = _float(raw, "dsearch", cfg.d_search)
-    cfg.angle_ch_centroid_min = _float(raw, "anglechcentroidmin", cfg.angle_ch_centroid_min)
-    cfg.angle_from_normal_max = _float(raw, "anglefromnormalmax", cfg.angle_from_normal_max)
-    cfg.max_chpi_iter         = _int(raw, "maxchpiiter", cfg.max_chpi_iter)
-    cfg.max_no_improve        = _int(raw, "maxnoimprove", cfg.max_no_improve)
-
-    # CONTACTS
-    cfg.min_hh_distance    = _float(raw, "minhhdistance", cfg.min_hh_distance)
-    cfg.min_heavy_distance = _float(raw, "minheavydistance", cfg.min_heavy_distance)
-    cfg.min_hx_distance    = _float(raw, "minhxdistance", cfg.min_hx_distance)
-
-    # SEEDS
-    cfg.use_seeds_folder          = _bool(raw, "useseedsfolder", cfg.use_seeds_folder)
-    cfg.seeds_folder              = _str(raw, "seedsfolder", cfg.seeds_folder)
-    cfg.num_perturbations_per_seed= _int(raw, "numperturbationsperseed",
-                                         cfg.num_perturbations_per_seed)
-    cfg.max_rot_perturb    = _float(raw, "maxrotperturb", cfg.max_rot_perturb)
-    cfg.max_trans_perturb  = _float(raw, "maxtransperturb", cfg.max_trans_perturb)
-    cfg.frac_mols_perturb  = _float(raw, "fracmolsperturb", cfg.frac_mols_perturb)
-
-    # INTEGRITY
-    cfg.check_molecular_integrity = _bool(raw, "checkmolecularintegrity",
-                                          cfg.check_molecular_integrity)
-    cfg.integrity_max_bond_ratio  = _float(raw, "integritymaxbondratio",
-                                           cfg.integrity_max_bond_ratio)
-
-    # PARALLEL
-    cfg.use_parallel          = _bool(raw, "useparallel", cfg.use_parallel)
-    cfg.parallel_workers      = _strlist(raw, "parallelworkers", cfg.parallel_workers)
-    cfg.parallel_local_slots  = _int(raw, "parallellocalslots", cfg.parallel_local_slots)
-    cfg.parallel_remote_dir   = _str(raw, "parallelremotedir", cfg.parallel_remote_dir)
-    cfg.parallel_python       = _str(raw, "parallelpython", cfg.parallel_python)
-    cfg.parallel_ssh_key      = _str(raw, "parallelsshkey", cfg.parallel_ssh_key)
-    cfg.parallel_ssh_timeout  = _int(raw, "parallelsshtimeout", cfg.parallel_ssh_timeout)
-    cfg.parallel_task_timeout = _int(raw, "paralleltasktimeout", cfg.parallel_task_timeout)
-    cfg.parallel_max_failures = _int(raw, "parallelmaxfailures", cfg.parallel_max_failures)
-    cfg.parallel_keep_remote  = _bool(raw, "parallelkeepremote", cfg.parallel_keep_remote)
-    cfg.parallel_fetch_on_failure = _bool(raw, "parallelfetchonfailure",
-                                          cfg.parallel_fetch_on_failure)
-    cfg.parallel_fetch_step   = _bool(raw, "parallelfetchstep", cfg.parallel_fetch_step)
 
     # Fail on a malformed worker entry now, not when the first cycle tries to
     # reach a machine whose name was a typo.
@@ -455,7 +489,7 @@ def load_config(filepath: str = "cryal.in") -> Config:
 
     # --- Validate required files ---
     if not os.path.exists(cfg.molecule_file):
-        raise FileNotFoundError(f"moleculeFile not found: {cfg.molecule_file}")
+        raise FileNotFoundError(f"general.molecule not found: {cfg.molecule_file}")
 
     # Everything else the run needs depends on which engine will run it: the
     # LAMMPS input script is mandatory for lammps_mace and meaningless to the
@@ -486,6 +520,7 @@ def load_config(filepath: str = "cryal.in") -> Config:
     cfg._volume_max_computed = (cfg.Z * cfg.mol_weight / NA) / (cfg.density_min * 1e-24)
 
     return cfg
+
 
 
 def _compute_mol_weight(xyz_file: str) -> float:

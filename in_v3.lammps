@@ -5,7 +5,7 @@ newton on
 
 read_data       structure.data
 
-# One mass per atom type, in the order given by specOrder in cryal.in.
+# One mass per atom type, in the order given by backend.lammps.species in cryal.toml.
 # This example is set up for benzene (C, H); add the types your molecule needs.
 mass 1 12.011
 mass 2 1.008
@@ -14,7 +14,7 @@ neighbor        2.0 bin
 neigh_modify    every 1 delay 0 check yes one 20000 page 200000
 
 pair_style      mliap unified /home/ibeth/RAUL/uspexrunz/MACE-OFF23_small.model-mliap_lammps.pt 0
-pair_coeff      * * C H          # must match specOrder in cryal.in
+pair_coeff      * * C H          # must match backend.lammps.species in cryal.toml
 
 thermo          50
 thermo_style    custom step temp pe etotal press vol density lx ly lz

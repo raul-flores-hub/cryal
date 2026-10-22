@@ -21,7 +21,7 @@ path cannot cover.
 
 First, it cannot actually be named by a dotted path. UMA is built in two steps
 -- fetch a predict unit, then wrap it for a task -- and the one-call form,
-`FAIRChemCalculator.from_model_checkpoint`, is a classmethod. `aseCalculator`
+`FAIRChemCalculator.from_model_checkpoint`, is a classmethod. `backend.ase.calculator`
 resolves `module.attribute` through importlib, which tries to import
 `fairchem.core.FAIRChemCalculator` as a module and fails. Every user would
 otherwise write the same four-line factory.
@@ -33,20 +33,21 @@ Third, and the reason this is not merely convenience: UMA carries a **task**,
 and choosing it wrong is silent. Each head was trained on a different domain
 and each has its own zero of energy -- for one periodic C50Au4 cell, `omat`
 gives -466.55 eV and `oc20` -447.06 eV. Numbers from two heads are not
-comparable, and nothing downstream would reveal the mix. `umaTask` is therefore
+comparable, and nothing downstream would reveal the mix. `backend.uma.task` is therefore
 mandatory, with no default, and validated here against the installed fairchem.
 
 Installation is *not* the ORCA-external route. See INSTALL.md: CrYAL drives UMA
 in this process through ASE, and needs neither the Flask server nor the ORCA
 external-tools client.
 
-Configuration (cryal.in):
-    energyBackend = uma
+Configuration (cryal.toml):
+    [backend]
+    engine = "uma"
 
-    % BACKEND_UMA
-    umaModel  = uma-s-1p1
-    umaTask   = omc          # mandatory: omc, omat, omol, oc20, odac...
-    umaDevice = cuda
+    [backend.uma]
+    model  = "uma-s-1p1"
+    task   = "omc"           # mandatory: omc, omat, omol, oc20, odac...
+    device = "cuda"
 """
 
 import os
@@ -106,7 +107,7 @@ class UmaBackend(AseCalculatorBackend):
             import fairchem.core  # noqa: F401
         except ImportError as e:
             raise ValueError(
-                "energyBackend = uma, but fairchem-core is not importable here "
+                'backend.engine = "uma", but fairchem-core is not importable here '
                 f"({e}). Install it into the interpreter that runs CrYAL: "
                 "`pip install fairchem-core`. The ORCA external-tools "
                 "installation is a different thing and is not required — "
@@ -116,30 +117,30 @@ class UmaBackend(AseCalculatorBackend):
         tasks = _installed_tasks()
         if not task:
             raise ValueError(
-                "umaTask is mandatory and has no default: each UMA head was "
+                "backend.uma.task is mandatory and has no default: each UMA head was "
                 "trained on a different domain and has its own zero of energy, "
                 f"so guessing one silently biases every number. Choose from: "
                 f"{', '.join(tasks)}. For organic molecular crystals that is "
                 "'omc'.")
         if task not in tasks:
             raise ValueError(
-                f"umaTask '{task}' is not offered by the installed fairchem — "
+                f"backend.uma.task '{task}' is not offered by the installed fairchem — "
                 f"available: {', '.join(tasks)}")
 
         model = (getattr(cfg, "uma_model", "") or "").strip()
         models = _available_models()
         if models and model not in models:
             raise ValueError(
-                f"umaModel '{model}' is not offered by the installed fairchem — "
+                f"backend.uma.model '{model}' is not offered by the installed fairchem — "
                 f"available: {', '.join(models)}")
 
         device = (getattr(cfg, "uma_device", "cuda") or "cuda").strip()
         if device not in ("cuda", "cpu"):
-            raise ValueError(f"umaDevice must be 'cuda' or 'cpu', got '{device}'")
+            raise ValueError(f"backend.uma.device must be 'cuda' or 'cpu', got '{device}'")
 
         if getattr(cfg, "ase_optimizer", "FIRE") not in cls._optimizers():
             raise ValueError(
-                f"aseOptimizer '{cfg.ase_optimizer}' not recognised — "
+                f"relaxation.optimizer '{cfg.ase_optimizer}' not recognised — "
                 f"choose one of: {', '.join(cls._optimizers())}")
 
     @staticmethod

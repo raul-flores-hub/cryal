@@ -15,16 +15,18 @@
 """
 ase_calculator.py — in-process relaxation with any ASE calculator.
 
-Selected with `energyBackend = ase`. The calculator is named by dotted path in
-the input file, so no calculator is a dependency of CrYAL:
+Selected with `engine = "ase"` in [backend]. The calculator is named by
+dotted path in the input file, so no calculator is a dependency of CrYAL:
 
-    % BACKEND_ASE
-    aseCalculator       = mace.calculators.mace_off
-    aseCalculatorKwargs = model=medium device=cuda
-    aseOptimizer        = FIRE
-    aseFmax             = 0.05
-    aseMaxSteps         = 500
-    aseRelaxCell        = true
+    [backend.ase]
+    calculator        = "mace.calculators.mace_off"
+    calculator_kwargs = { model = "medium", device = "cuda" }
+
+    [relaxation]
+    optimizer  = "FIRE"
+    fmax       = 0.05
+    max_steps  = 500
+    relax_cell = true
 
 The dotted path may name a class (`ase.calculators.emt.EMT`) or a factory
 function (`mace.calculators.mace_off`); it is called once, with the keyword
@@ -39,7 +41,7 @@ Two differences from the LAMMPS backend are worth stating plainly:
   * Energies are only comparable within one backend and one potential. A
     database built with one must not be merged with a database built with
     another; on resume, keep the backend you started with.
-  * `aseMaxSteps` is a per-calculator setting, not a per-project one. A
+  * `relaxation.max_steps` is a per-calculator setting, not a per-project one. A
     structure that has not converged when the budget runs out is discarded,
     which is right — it was not evaluated at a minimum — but it looks exactly
     like a structure that lost on its merits. RelaxationBudget below is what
@@ -58,7 +60,7 @@ from . import register
 from .base import EnergyBackend
 
 
-#: optimizers accepted by `aseOptimizer`
+#: optimizers accepted by `relaxation.optimizer`
 _OPTIMIZERS = ("FIRE", "BFGS", "LBFGS", "BFGSLineSearch", "GPMin")
 
 
@@ -67,27 +69,27 @@ def _import_dotted(path: str):
     Import 'package.module.attribute' and return the attribute.
 
     Raises ValueError with an actionable message on anything that goes wrong,
-    because this is user input from cryal.in.
+    because this is user input from cryal.toml.
     """
     if not path or "." not in path:
         raise ValueError(
-            f"aseCalculator must be a dotted path such as "
+            f"backend.ase.calculator must be a dotted path such as "
             f"'ase.calculators.emt.EMT', got '{path}'")
     module_path, _, attr = path.rpartition(".")
     try:
         module = importlib.import_module(module_path)
     except ImportError as e:
         raise ValueError(
-            f"aseCalculator '{path}': cannot import '{module_path}' — {e}") from None
+            f"backend.ase.calculator '{path}': cannot import '{module_path}' — {e}") from None
     try:
         return getattr(module, attr)
     except AttributeError:
         raise ValueError(
-            f"aseCalculator '{path}': '{module_path}' has no '{attr}'") from None
+            f"backend.ase.calculator '{path}': '{module_path}' has no '{attr}'") from None
 
 
 class RelaxationBudget:
-    """Running tally of how close a cycle's relaxations came to aseMaxSteps.
+    """Running tally of how close a cycle's relaxations came to relaxation.max_steps.
 
     Discarding a structure that never converged is the right call: it was not
     evaluated at a minimum, so its energy does not belong in the database. It
@@ -157,13 +159,13 @@ class RelaxationBudget:
             tail = (f"; the {kept} that converged needed up to {worst} steps"
                     if kept else "")
             return (logging.WARNING,
-                    f"  aseMaxSteps: {lost} of {kept + lost} relaxations spent "
+                    f"  relaxation.max_steps: {lost} of {kept + lost} relaxations spent "
                     f"the {self.limit}-step budget without converging and were "
-                    f"discarded{tail} — raise aseMaxSteps if this cycle lost "
+                    f"discarded{tail} — raise relaxation.max_steps if this cycle lost "
                     f"structures it should have kept")
         if worst >= self.NEAR_LIMIT * self.limit:
             return (logging.INFO,
-                    f"  aseMaxSteps: all {kept} relaxations converged, the "
+                    f"  relaxation.max_steps: all {kept} relaxations converged, the "
                     f"slowest in {worst} of {self.limit} steps — the budget is "
                     f"nearly spent")
         return None
@@ -215,7 +217,7 @@ class AseCalculatorBackend(EnergyBackend):
         _import_dotted(cfg.ase_calculator)
         if cfg.ase_optimizer not in _OPTIMIZERS:
             raise ValueError(
-                f"aseOptimizer '{cfg.ase_optimizer}' not recognised — "
+                f"relaxation.optimizer '{cfg.ase_optimizer}' not recognised — "
                 f"choose one of: {', '.join(_OPTIMIZERS)}")
 
     def describe(self) -> str:
@@ -273,7 +275,7 @@ class AseCalculatorBackend(EnergyBackend):
             left = f"{reached:.3f}" if reached is not None else "unknown"
             return self._reject(
                 logger,
-                f"not converged: spent the aseMaxSteps budget of "
+                f"not converged: spent the relaxation.max_steps budget of "
                 f"{cfg.ase_max_steps} with fmax {left} eV/Å still above the "
                 f"{cfg.ase_fmax} target")
 

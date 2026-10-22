@@ -42,10 +42,11 @@ fails at the first force evaluation with:
 AttributeError: 'MLIAPDataPy' object has no attribute 'forward_exchange'
 ```
 
-And the run command must carry the Kokkos flags, in `cryal.in`:
+And the run command must carry the Kokkos flags, in `cryal.toml`:
 
-```
-lammpsCommand = lmp -k on g 1 -sf kk -pk kokkos newton on neigh half
+```toml
+[backend.lammps]
+command = "lmp -k on g 1 -sf kk -pk kokkos newton on neigh half"
 ```
 
 The embedded interpreter inside `lmp` does not find the `lammps` module on its
@@ -109,7 +110,7 @@ noise rather than a change of model.
 
 Do not use an MD-annealed protocol for this check: it is not deterministic.
 
-## 5. UMA (optional, for `energyBackend = uma`)
+## 5. UMA (optional, for `engine = "uma"` in `[backend]`)
 
 CrYAL needs **only the Python package**:
 
@@ -168,23 +169,25 @@ Note also that a search of `$HOME` alone finds neither.
 
 ### Configuring it
 
-```
-energyBackend = uma
+```toml
+[backend]
+engine = "uma"
 
-% BACKEND_UMA
-umaModel  = uma-s-1p1
-umaTask   = omc
-umaDevice = cuda
+[backend.uma]
+model  = "uma-s-1p1"
+task   = "omc"
+device = "cuda"
 ```
 
-`umaTask` is **mandatory and has no default.** Each UMA head was trained on a
+`backend.uma.task` is **mandatory and has no default.** Each UMA head was trained on a
 different domain and each carries its own zero of energy: for one periodic
 C50Au4 cell, `omat` returns −466.55 eV and `oc20` −447.06 eV. Energies from two
 heads are not comparable, and nothing downstream would reveal a run that mixed
 them. `omc` is the organic-molecular-crystal head, which is the one for CSP.
 
-The relaxation is configured by the shared `aseOptimizer` / `aseFmax` /
-`aseMaxSteps` / `aseRelaxCell` keys. Note that `aseMaxSteps` matters more here
+The relaxation is configured by the `[relaxation]` table it shares with the
+`ase` backend: `optimizer`, `fmax`, `max_steps`, `relax_cell`. Note that
+`relaxation.max_steps` matters more here
 than with MACE: on a set of 19 crystal candidates MACE-OFF converged in about 25
 steps and UMA needed 39–582 from the same geometries, so a budget tuned for one
 fails structures with the other.
@@ -222,11 +225,12 @@ different revision without saying so.
 
 ## 6. The workers of a parallel run
 
-`useParallel` hands whole candidates to other machines over ssh. The preflight
+`[parallel]` hands whole candidates to other machines over ssh. The preflight
 checks every worker before the first cycle and disables the ones that fail, so
 the run tells you about a broken machine in its first seconds instead of
 counting its candidates as lost structures. What it demands of each worker:
-passwordless ssh, an interpreter that can `import cryal` and `ase`, and
+passwordless ssh, an interpreter (Python 3.11 or later) that can
+`import cryal` and `ase`, and
 whatever the chosen backend needs -- `lmp` for `lammps_mace`, `fairchem` for
 `uma`.
 
@@ -234,8 +238,8 @@ The interpreter is the part that catches people out. It is the third field of
 the worker entry, and on a machine set up for a potential it is almost never
 the `python3` on `PATH`:
 
-```
-parallelWorkers = raul@10.0.0.11:2:/home/raul/orca-uma/bin/python
+```toml
+workers = ["raul@10.0.0.11:2:/home/raul/orca-uma/bin/python"]
 ```
 
 Install CrYAL into *that* interpreter. Build a wheel on the server and
@@ -277,12 +281,12 @@ stake and only you know whether the two versions score identically. Treat it as
 a reason to redeploy, not as noise to run through.
 
 The **server** does not need the backend at all when it relaxes nothing
-itself. Set `parallelLocalSlots = 0`, name only remote machines, and the
+itself. Set `parallel.local_slots = 0`, name only remote machines, and the
 backend's load-time check is skipped here -- which is what lets a MACE
 environment steer a network of UMA machines without installing the second
 stack beside the first, the exact risk this section is otherwise about. The
 check is not lost, only moved: the preflight runs that same `validate_config()`
-on every worker, so a wrong `umaTask` or a missing checkpoint still surfaces in
+on every worker, so a wrong `backend.uma.task` or a missing checkpoint still surfaces in
 the first seconds, reported by the machines it concerns.
 
 The one thing to know is what happens when the workers all go away. Evaluation

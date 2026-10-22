@@ -17,8 +17,8 @@
 run_cryal.py — CrYAL entry point, for running from a checkout.
 
 Usage:
-    python run_cryal.py              # reads cryal.in in current directory
-    python run_cryal.py my_run.in    # reads a custom input file
+    python run_cryal.py              # reads cryal.toml in current directory
+    python run_cryal.py my_run.toml  # reads a custom input file
     python run_cryal.py --resume     # continue an interrupted run (e.g. after
                                      # a power outage) from its output_dir
 
@@ -27,7 +27,7 @@ a plain checkout with no installation. The command line itself lives in
 `cryal/cli.py`, so that `pip install cryal` also provides a `cryal` command;
 both run exactly the same code.
 
-See cryal.in for all configurable parameters.
+See cryal.toml for all configurable parameters.
 """
 
 import sys

@@ -15,7 +15,7 @@
 """
 backends — the energy engines CrYAL can drive.
 
-`energyBackend` in cryal.in selects one by name. Omitting the key selects
+`backend.engine` in cryal.toml selects one by name. Omitting the key selects
 `lammps_mace`, which is what every input written before this package existed
 means — including the one archived with v1.0.0 and used for the published run.
 
@@ -48,7 +48,7 @@ def backend_class(name: str):
         return _BACKENDS[str(name).strip().lower()]
     except KeyError:
         raise ValueError(
-            f"unknown energyBackend '{name}' — available: "
+            f"unknown backend.engine '{name}' — available: "
             f"{', '.join(available_backends())}") from None
 
 

@@ -16,9 +16,9 @@
 
 Two contracts are guarded here.
 
-The first is backward compatibility: an input file without `energyBackend` --
-including the one archived with v1.0.0, which produced the run reported in the
-article -- must still mean LAMMPS/MACE-OFF, and `cryal.lammps_runner`'s
+The first is backward compatibility: an input file without `backend.engine`
+-- including the one archived with v1.0.0, which produced the run reported in
+the article, once converted to cryal.toml -- must still mean LAMMPS/MACE-OFF, and `cryal.lammps_runner`'s
 module-level API must keep working, because that is the extension point the
 released README documents.
 
@@ -48,9 +48,17 @@ from cryal.config import Config, load_config
 
 
 MINIMAL = """
-% GENERAL
-moleculeFile = examples/benzene.xyz
+[general]
+molecule = "examples/benzene.xyz"
 Z = 4
+"""
+
+ASE_STUB = """
+[backend]
+engine = "ase"
+
+[backend.ase]
+calculator = "tests.stub_calculator.StubCalculator"
 """
 
 
@@ -196,7 +204,7 @@ class TestConfigSelection(unittest.TestCase):
             os.unlink(p)
 
     def _write(self, body):
-        fd, path = tempfile.mkstemp(suffix="_cryal.in")
+        fd, path = tempfile.mkstemp(suffix="_cryal.toml")
         with os.fdopen(fd, "w") as f:
             f.write(body)
         self._paths.append(path)
@@ -209,7 +217,7 @@ class TestConfigSelection(unittest.TestCase):
 
     def test_an_unknown_backend_fails_at_load_time(self):
         with self.assertRaises(ValueError):
-            load_config(self._write(MINIMAL + "energyBackend = quantum_espresso\n"))
+            load_config(self._write(MINIMAL + '[backend]\nengine = "quantum_espresso"\n'))
 
     def test_the_lammps_backend_requires_its_input_script(self):
         cfg = Config()
@@ -219,39 +227,35 @@ class TestConfigSelection(unittest.TestCase):
 
     def test_the_ase_backend_does_not_require_a_lammps_script(self):
         cfg = load_config(self._write(
-            MINIMAL +
-            "energyBackend = ase\n"
-            "lammpsInput = /nonexistent/in.lammps\n"
-            "aseCalculator = tests.stub_calculator.StubCalculator\n"))
+            MINIMAL + ASE_STUB +
+            '[backend.lammps]\ninput = "/nonexistent/in.lammps"\n'))
         self.assertEqual(cfg.energy_backend, "ase")
 
     def test_a_missing_calculator_fails_at_load_time(self):
         with self.assertRaises(ValueError):
-            load_config(self._write(MINIMAL + "energyBackend = ase\n"))
+            load_config(self._write(MINIMAL + '[backend]\nengine = "ase"\n'))
 
     def test_an_unimportable_calculator_fails_at_load_time(self):
         with self.assertRaises(ValueError):
             load_config(self._write(
-                MINIMAL + "energyBackend = ase\n"
-                "aseCalculator = nosuchpackage.Calculator\n"))
+                MINIMAL + '[backend]\nengine = "ase"\n'
+                '[backend.ase]\ncalculator = "nosuchpackage.Calculator"\n'))
 
     def test_an_unknown_optimizer_fails_at_load_time(self):
         with self.assertRaises(ValueError):
             load_config(self._write(
-                MINIMAL + "energyBackend = ase\n"
-                "aseCalculator = tests.stub_calculator.StubCalculator\n"
-                "aseOptimizer = SteepestDescent\n"))
+                MINIMAL + ASE_STUB +
+                '[relaxation]\noptimizer = "SteepestDescent"\n'))
 
     def test_calculator_keyword_arguments_are_typed(self):
         cfg = load_config(self._write(
-            MINIMAL + "energyBackend = ase\n"
-            "aseCalculator = tests.stub_calculator.StubCalculator\n"
-            "aseCalculatorKwargs = energy=-2500.0 force=0 device=cuda\n"))
+            MINIMAL + ASE_STUB +
+            'calculator_kwargs = { energy = -2500.0, force = 0, device = "cuda" }\n'))
         self.assertEqual(cfg.ase_calculator_kwargs,
                          {"energy": -2500.0, "force": 0, "device": "cuda"})
 
     def test_the_energy_bound_can_be_disabled_from_the_input(self):
-        cfg = load_config(self._write(MINIMAL + "energySanityMax = none\n"))
+        cfg = load_config(self._write(MINIMAL + "[backend]\nenergy_sanity_max = false\n"))
         self.assertIsNone(cfg.energy_sanity_max)
 
 
@@ -353,7 +357,7 @@ class TestRejectionReason(unittest.TestCase):
         self.cfg.energy_sanity_max = -3000.0      # -2500 eV is above it
         backend = get_backend(self.cfg)
         backend.evaluate(sane_structure(), self.step, [], 2)
-        self.assertIn("energySanityMax", backend.last_rejection)
+        self.assertIn("backend.energy_sanity_max", backend.last_rejection)
 
     def test_a_reason_does_not_survive_into_the_next_candidate(self):
         # The pool prints this next to a candidate's name; a stale reason
@@ -388,7 +392,7 @@ class TestRejectionReason(unittest.TestCase):
 
 
 class TestStepBudget(unittest.TestCase):
-    """aseMaxSteps, and the tally that keeps it from eating a cycle in silence.
+    """relaxation.max_steps, and the tally that keeps it from eating a cycle in silence.
 
     A relaxation that runs out of steps is discarded, which is correct: it was
     not evaluated at a minimum. What is not correct is that this looks exactly
@@ -419,7 +423,7 @@ class TestStepBudget(unittest.TestCase):
     def test_running_out_of_steps_names_the_setting_to_raise(self):
         backend = get_backend(self.cfg)
         backend.evaluate(sane_structure(), self.step, [], 2)
-        self.assertIn("aseMaxSteps", backend.last_rejection)
+        self.assertIn("relaxation.max_steps", backend.last_rejection)
         self.assertIn("5", backend.last_rejection)
 
     def test_the_reason_says_how_far_the_forces_still_were(self):
@@ -439,7 +443,7 @@ class TestStepBudget(unittest.TestCase):
         level, message = backend.relaxation_budget().report()
         self.assertEqual(level, logging.WARNING)
         self.assertIn("1 of 2", message)
-        self.assertIn("aseMaxSteps", message)
+        self.assertIn("relaxation.max_steps", message)
 
     def test_a_comfortable_budget_stays_quiet(self):
         # A line printed every cycle is a line nobody reads.
@@ -484,7 +488,7 @@ class TestCompatibilityShim(unittest.TestCase):
                                          _lammps_env)
 
     def test_the_old_call_still_gates_before_running_lammps(self):
-        # lammpsCommand is nonsense on purpose: if the gate did not fire
+        # backend.lammps.command is nonsense on purpose: if the gate did not fire
         # first, this would try to run it.
         from cryal.lammps_runner import evaluate_structure
         cfg = Config()
