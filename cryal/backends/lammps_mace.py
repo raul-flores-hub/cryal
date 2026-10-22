@@ -51,8 +51,16 @@ def _write_lammps_data(atoms, filepath: str, spec_order):
     """
     Write ASE Atoms to a LAMMPS data file (atomic style, triclinic cell).
     spec_order maps element symbols to LAMMPS atom types.
+
+    force_skew writes the tilt factors even when they are zero. Without it a
+    cell with right angles (orthorhombic, tetragonal, cubic) is read as an
+    orthogonal box, and the `fix npt ... tri` stage of the LAMMPS input dies
+    with "Can not specify Pxy/Pxz/Pyz in fix npt with non-triclinic box".
+    The same as `change_box all triclinic` after read_data: it changes how
+    the box is stored, not the cell.
     """
-    write(filepath, atoms, format='lammps-data', specorder=spec_order)
+    write(filepath, atoms, format='lammps-data', specorder=spec_order,
+          force_skew=True)
 
 
 def _z_of_type(spec_order):

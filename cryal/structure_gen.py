@@ -56,6 +56,12 @@ warnings.filterwarnings('ignore')
 _TRICLINIC    = frozenset(range(1, 3))
 _MONOCLINIC   = frozenset(range(3, 16))
 _ORTHORHOMBIC = frozenset(range(16, 75))
+_TETRAGONAL   = frozenset(range(75, 143))
+# Trigonal and hexagonal share the a = b, gamma = 120 cell. The rhombohedral
+# groups (R3, R-3, R32, R3m, R3c, R-3m, R-3c) take it too: PyXtal is called
+# with conventional=True, which places them in the hexagonal setting.
+_HEXAGONAL    = frozenset(range(143, 195))
+_CUBIC        = frozenset(range(195, 231))
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +84,19 @@ def _axis_ratios(sigma: float, anisotropy_target: Optional[float]) -> Tuple[floa
     return p[1] / p[0], p[2] / p[0]
 
 
+def _unique_axis_ratio(sigma: float, anisotropy_target: Optional[float]) -> float:
+    """
+    Ratio c/a for cells with a = b (tetragonal, trigonal, hexagonal). Without a
+    target, log-normal like _axis_ratios. With one, the longest/shortest ratio
+    is c/a or a/c, so it is drawn within +-10 % of the target and inverted
+    half the time, leaving the long axis as likely to be c as to be a = b.
+    """
+    if anisotropy_target is None:
+        return np.exp(random.gauss(0.0, sigma))
+    t = random.uniform(max(1.0, 0.9 * anisotropy_target), max(1.0, 1.1 * anisotropy_target))
+    return t if random.random() < 0.5 else 1.0 / t
+
+
 def random_lattice_for_sg(sg: int, volume: float, cfg: Config,
                           beta_override: Optional[float] = None,
                           anisotropy_target: Optional[float] = None
@@ -91,7 +110,8 @@ def random_lattice_for_sg(sg: int, volume: float, cfg: Config,
     All axes are guaranteed >= cfg.min_cell_axis.
 
     anisotropy_target (gpAnisotropy): longest/shortest axis ratio to
-    reproduce, within +-10 %, instead of the log-normal ratios.
+    reproduce, within +-10 %, instead of the log-normal ratios. A cubic cell
+    has no free ratio and ignores it.
 
     Beta angle behavior:
       - If beta_override is provided: beta = beta_override
@@ -118,7 +138,24 @@ def random_lattice_for_sg(sg: int, volume: float, cfg: Config,
             a = (volume / (r1 * r2)) ** (1.0 / 3.0)
             b, c = a * r1, a * r2
 
-        else:  # triclinic (SG=2)
+        elif sg in _TETRAGONAL:
+            alpha = beta = gamma = 90.0
+            r = _unique_axis_ratio(0.5, anisotropy_target)
+            a = b = (volume / r) ** (1.0 / 3.0)
+            c = a * r
+
+        elif sg in _HEXAGONAL:
+            alpha = beta = 90.0
+            gamma = 120.0
+            r = _unique_axis_ratio(0.5, anisotropy_target)
+            a = b = (volume / (r * np.sqrt(3.0) / 2.0)) ** (1.0 / 3.0)
+            c = a * r
+
+        elif sg in _CUBIC:
+            alpha = beta = gamma = 90.0
+            a = b = c = volume ** (1.0 / 3.0)
+
+        else:  # triclinic (SG 1-2)
             alpha = random.uniform(70.0, 110.0)
             beta  = random.uniform(70.0, 110.0)
             gamma = random.uniform(70.0, 110.0)
@@ -136,27 +173,49 @@ def random_lattice_for_sg(sg: int, volume: float, cfg: Config,
         if min(a, b, c) >= cfg.min_cell_axis:
             return a, b, c, alpha, beta, gamma
 
-    # Fallback: cubic cell
+    # Fallback: equal axes. A cubic cell is a special case of every system
+    # but the hexagonal one, which needs gamma = 120 to keep its symmetry.
+    if sg in _HEXAGONAL:
+        a = (volume / (np.sqrt(3.0) / 2.0)) ** (1.0 / 3.0)
+        return a, a, a, 90.0, 90.0, 120.0
     a = volume ** (1.0 / 3.0)
     return a, a, a, 90.0, 90.0, 90.0
 
 
 def _try_pyxtal(mol_file: str, sg: int, Z: int, a, b, c, alpha, beta, gamma,
-                expected: int) -> Optional:
+                expected: int, failures: Optional[Dict[str, int]] = None) -> Optional:
     """
     Attempt to generate one PyXtal structure with the given lattice.
-    Returns ASE Atoms or None on failure.
+    Returns ASE Atoms or None on failure; with `failures`, counts the reason.
+
+    The reasons differ in kind. Comp_CompatibilityError and
+    Symm_CompatibilityError mean Z, or the molecule's own symmetry, does not
+    fit any combination of Wyckoff positions of the group: every attempt at
+    that group will fail, whatever the cell. Anything else (no placement
+    without overlaps at this volume) can succeed on the next cell.
     """
+    def _fail(reason):
+        if failures is not None:
+            failures[reason] = failures.get(reason, 0) + 1
+        return None
+
     try:
         lat  = Lattice.from_para(a, b, c, alpha, beta, gamma)
         xtal = pyxtal(molecular=True)
         xtal.from_random(3, sg, [mol_file], [Z], lattice=lat, conventional=True)
+        if not xtal.valid:
+            return _fail('no_placement')
         atoms = xtal.to_ase(resort=False)
         if len(atoms) != expected:
-            return None
+            return _fail('atom_count')
         return atoms
-    except Exception:
-        return None
+    except Exception as e:
+        return _fail(type(e).__name__)
+
+
+def _incompatible(failures: Dict[str, int]) -> bool:
+    """True once PyXtal has said Z or the molecule cannot fit the group."""
+    return any(k.endswith('CompatibilityError') for k in failures)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +248,12 @@ def generate_structures(mol_file: str, cfg: Config, n: int,
     structures = []
     attempts   = 0
     errors: Dict[str, int] = {}
+    # Per space group: how often drawn, how often it gave a structure, and
+    # why PyXtal failed. A group that never succeeds is named in the log
+    # instead of disappearing into the attempt count.
+    drawn:    Dict[int, int] = {}
+    made:     Dict[int, int] = {}
+    sg_fails: Dict[int, Dict[str, int]] = {}
 
     # Split into biased and unbiased if suggestions are available
     n_biased   = (n // 2) if suggestions else 0
@@ -196,14 +261,23 @@ def generate_structures(mol_file: str, cfg: Config, n: int,
 
     def _attempt(sg, volume, beta_override=None, anisotropy_target=None):
         """One generation attempt with USPEX-like expansion loop."""
+        drawn[sg] = drawn.get(sg, 0) + 1
+        fails = sg_fails.setdefault(sg, {})
+        # Z or the molecule's symmetry fits no Wyckoff combination of this
+        # group. That does not depend on the cell, so no draw of it can work.
+        if _incompatible(fails):
+            return None, sg, None
         base_vol = volume
         for expansion in cfg.volume_expansion_factors:
             vol = base_vol * expansion
             a, b, c, alpha, beta, gamma = random_lattice_for_sg(
                 sg, vol, cfg, beta_override=beta_override,
                 anisotropy_target=anisotropy_target)
-            atoms = _try_pyxtal(mol_abs, sg, cfg.Z, a, b, c, alpha, beta, gamma, expected)
+            atoms = _try_pyxtal(mol_abs, sg, cfg.Z, a, b, c, alpha, beta, gamma,
+                                expected, fails)
             if atoms is None:
+                if _incompatible(fails):
+                    break
                 continue
             if not check_cell_axes(atoms, cfg.min_cell_axis):
                 errors['axis_short'] = errors.get('axis_short', 0) + 1
@@ -211,6 +285,7 @@ def generate_structures(mol_file: str, cfg: Config, n: int,
             if not check_bond_integrity(atoms):
                 errors['bond_integrity'] = errors.get('bond_integrity', 0) + 1
                 continue
+            made[sg] = made.get(sg, 0) + 1
             return atoms, sg, expansion
         return None, sg, None
 
@@ -272,13 +347,25 @@ def generate_structures(mol_file: str, cfg: Config, n: int,
             top_errors = sorted(errors.items(), key=lambda x: -x[1])[:3]
             for k, v in top_errors:
                 logger.debug(f"    [{v}x] {k}")
-        betas = [s['atoms'].cell.cellpar()[4] for s in structures]
-        rhos  = [compute_density(s['atoms'], cfg.Z,
-                                 cfg.mol_weight) for s in structures]
-        logger.info(f"  Volume: [{min(s['atoms'].get_volume() for s in structures):.0f}, "
-                    f"{max(s['atoms'].get_volume() for s in structures):.0f}] Å³")
-        logger.info(f"  Density: [{min(rhos):.3f}, {max(rhos):.3f}] g/cm³")
-        logger.info(f"  Beta: [{min(betas):.1f}°, {max(betas):.1f}°]")
+        for sg in sorted(drawn):
+            fails = sg_fails.get(sg, {})
+            why = ", ".join(f"{k} x{v}" for k, v in
+                            sorted(fails.items(), key=lambda x: -x[1])[:2])
+            line = (f"    SG {sg}: {made.get(sg, 0)}/{drawn[sg]} draws gave a "
+                    f"structure" + (f" (PyXtal: {why})" if why else ""))
+            if made.get(sg, 0) == 0:
+                logger.warning(line + f" -- nothing sampled from SG {sg} "
+                               f"with Z = {cfg.Z}")
+            else:
+                logger.debug(line)
+        if structures:
+            betas = [s['atoms'].cell.cellpar()[4] for s in structures]
+            rhos  = [compute_density(s['atoms'], cfg.Z,
+                                     cfg.mol_weight) for s in structures]
+            logger.info(f"  Volume: [{min(s['atoms'].get_volume() for s in structures):.0f}, "
+                        f"{max(s['atoms'].get_volume() for s in structures):.0f}] Å³")
+            logger.info(f"  Density: [{min(rhos):.3f}, {max(rhos):.3f}] g/cm³")
+            logger.info(f"  Beta: [{min(betas):.1f}°, {max(betas):.1f}°]")
 
     return structures
 

@@ -97,6 +97,12 @@ maxNoImproveCycles    = 3              # stop if best energy unchanged for N cyc
 #   SG  9 (Cc):        ~4%   monoclinic
 #   SG 33 (Pna2_1):    ~2%   orthorhombic
 #   SG 61 (Pbca):      ~2%   orthorhombic
+# Any group 1-230 may be listed; the cell is drawn for its crystal system
+# (trigonal and rhombohedral groups in the hexagonal setting). Above 74 a
+# group usually needs Z to match its Wyckoff multiplicities: with Z = 4,
+# I4_1/a (88, general position 16) only fits a molecule that sits on a
+# special position with the right site symmetry. A group that never yields
+# a structure is named in the log with PyXtal's reason.
 spaceGroups           = 14 2 19 15 4 9 33 61
 sgWeights             = 36 24 11  7 6 4  2  2
 

@@ -363,14 +363,10 @@ def load_config(filepath: str = "INPUT.txt") -> Config:
     cfg.sg_weights   = _floatlist(raw, "sgweights", cfg.sg_weights)
     if len(cfg.sg_weights) != len(cfg.space_groups):
         raise ValueError("spaceGroups and sgWeights must have the same length")
-    # The lattice sampler knows triclinic, monoclinic and orthorhombic cells
-    # only (space groups 1-74); a higher group would be drawn with the wrong
-    # cell and fail every attempt silently.
-    unsupported = [sg for sg in cfg.space_groups if not 1 <= sg <= 74]
+    unsupported = [sg for sg in cfg.space_groups if not 1 <= sg <= 230]
     if unsupported:
-        raise ValueError(f"spaceGroups {unsupported} not supported: the lattice "
-                         "sampler covers space groups 1-74 (triclinic to "
-                         "orthorhombic)")
+        raise ValueError(f"spaceGroups {unsupported} are not space groups: "
+                         "valid numbers are 1-230")
 
     # VOLUME
     vol_min_raw = _str(raw, "targetvolumemin", "auto")
