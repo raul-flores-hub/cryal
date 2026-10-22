@@ -15,7 +15,7 @@
 """
 backends — the energy engines CrYAL can drive.
 
-`energyBackend` in INPUT.txt selects one by name. Omitting the key selects
+`energyBackend` in cryal.in selects one by name. Omitting the key selects
 `lammps_mace`, which is what every input written before this package existed
 means — including the one archived with v1.0.0 and used for the published run.
 

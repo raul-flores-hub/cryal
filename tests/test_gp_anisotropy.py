@@ -35,7 +35,7 @@ from cryal.structure_gen import random_lattice_for_sg
 
 
 def _load(extra=""):
-    fd, path = tempfile.mkstemp(suffix="_INPUT.txt")
+    fd, path = tempfile.mkstemp(suffix="_cryal.in")
     with os.fdopen(fd, "w") as f:
         f.write("% GENERAL\nmoleculeFile = examples/benzene.xyz\nZ = 4\n" + extra)
     try:

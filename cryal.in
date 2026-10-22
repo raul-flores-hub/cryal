@@ -1,6 +1,6 @@
 # =============================================================================
 # CrYAL — Crystal Structure Prediction via Active Learning
-# INPUT.txt — Main configuration file
+# cryal.in — Main configuration file
 #
 # Format:
 #   % SECTION_NAME       starts a section

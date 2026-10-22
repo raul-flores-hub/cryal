@@ -60,7 +60,7 @@ repeatedly is retired and the run continues with fewer slots. Only the
 structure-level verdict — relaxation failed, integrity rejected — comes back
 as a normal `(None, None)`, exactly as in a serial run.
 
-Configuration (INPUT.txt)
+Configuration (cryal.in)
 =========================
     % PARALLEL
     useParallel        = true

@@ -160,7 +160,7 @@ class TestDependencies(unittest.TestCase):
         # RDKit used to be in this list and should not have been: it is not a
         # heavy engine dependency but the CH-pi optimizer's, and that optimizer
         # is on by default, so leaving it undeclared meant a clean
-        # `pip install cryal` raised ImportError on the shipped INPUT.
+        # `pip install cryal` raised ImportError on the shipped cryal.in.
         for name in ("torch", "mace-torch", "pymatgen"):
             self.assertNotIn(name, self.declared)
 
@@ -174,15 +174,15 @@ class TestShippedExample(unittest.TestCase):
     """
 
     def setUp(self):
-        with open(os.path.join(ROOT, "INPUT.txt")) as f:
-            self.input_txt = f.read()
+        with open(os.path.join(ROOT, "cryal.in")) as f:
+            self.shipped_input = f.read()
 
     def _value(self, key):
-        for line in self.input_txt.splitlines():
+        for line in self.shipped_input.splitlines():
             line = line.split("#")[0].strip()
             if line.lower().startswith(key.lower()) and "=" in line:
                 return line.partition("=")[2].strip()
-        self.fail(f"{key} not found in INPUT.txt")
+        self.fail(f"{key} not found in cryal.in")
 
     def test_the_example_molecule_exists_and_is_a_valid_xyz(self):
         path = os.path.join(ROOT, "examples", "benzene.xyz")

@@ -13,9 +13,9 @@
 # limitations under the License.
 
 """
-config.py — INPUT.txt parser and configuration container.
+config.py — cryal.in parser and configuration container.
 
-Parses the USPEX-like INPUT.txt format:
+Parses the cryal.in format (USPEX-like sections):
   % SECTION_NAME
   KEY = VALUE   # optional inline comment
 
@@ -36,12 +36,12 @@ from typing import Any, Dict, List, Optional
 
 def parse_input(filepath: str) -> dict:
     """
-    Parse INPUT.txt into a flat dict of {key: raw_string_value}.
+    Parse cryal.in into a flat dict of {key: raw_string_value}.
     Section names are dropped; keys are case-insensitive (stored lowercase).
     """
     raw = {}
     if not os.path.exists(filepath):
-        raise FileNotFoundError(f"INPUT file not found: {filepath}")
+        raise FileNotFoundError(f"input file not found: {filepath}")
 
     with open(filepath) as f:
         for line in f:
@@ -310,9 +310,9 @@ class Config:
 # Factory function
 # ---------------------------------------------------------------------------
 
-def load_config(filepath: str = "INPUT.txt") -> Config:
+def load_config(filepath: str = "cryal.in") -> Config:
     """
-    Load and validate configuration from INPUT.txt.
+    Load and validate configuration from cryal.in.
     Auto-computes volume range from density range if 'auto' is specified.
     """
     raw = parse_input(filepath)

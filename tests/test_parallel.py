@@ -786,7 +786,7 @@ class TestCoordinatorWithoutTheBackend(unittest.TestCase):
 
 
 class TestInputKeysAreRead(unittest.TestCase):
-    """Every key in INPUT.txt must reach the Config.
+    """Every key in cryal.in must reach the Config.
 
     A key the parser looks up under a slightly different name is read as its
     default, silently, for the life of the project: the value in the file is
@@ -797,9 +797,9 @@ class TestInputKeysAreRead(unittest.TestCase):
         import cryal.config as config_module
 
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        input_path = os.path.join(here, "INPUT.txt")
+        input_path = os.path.join(here, "cryal.in")
         if not os.path.exists(input_path):
-            self.skipTest("INPUT.txt is not part of this checkout")
+            self.skipTest("cryal.in is not part of this checkout")
 
         declared = set(parse_input(input_path))
 
@@ -818,7 +818,7 @@ class TestInputKeysAreRead(unittest.TestCase):
 
         ignored = sorted(declared - looked_up)
         self.assertEqual(ignored, [],
-                         f"INPUT.txt sets keys that load_config never reads: {ignored}")
+                         f"cryal.in sets keys that load_config never reads: {ignored}")
 
 
 if __name__ == "__main__":

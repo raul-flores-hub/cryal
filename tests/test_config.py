@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""INPUT.txt parsing and the useGP ablation switch.
+"""cryal.in parsing and the useGP ablation switch.
 
 The backward-compatibility test here is the one that matters most: the
 configuration archived with v1.0.0 predates the useGP key, and the run
@@ -29,8 +29,8 @@ from cryal.config import Config, load_config, parse_input
 
 
 def write_input(body: str) -> str:
-    """Write body to a temporary INPUT.txt and return its path."""
-    fd, path = tempfile.mkstemp(suffix="_INPUT.txt")
+    """Write body to a temporary cryal.in and return its path."""
+    fd, path = tempfile.mkstemp(suffix="_cryal.in")
     with os.fdopen(fd, "w") as f:
         f.write(body)
     return path
@@ -76,7 +76,7 @@ class TestParser(unittest.TestCase):
 
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
-            parse_input("/nonexistent/INPUT.txt")
+            parse_input("/nonexistent/cryal.in")
 
     def test_unknown_key_does_not_break_the_load(self):
         cfg = load_config(self._write(MINIMAL + "someKeyNobodyKnows = 3\n"))

@@ -110,7 +110,7 @@ class EnergyBackend(ABC):
 
     Attributes
     ----------
-    name    : str — the value of `energyBackend` in INPUT.txt that selects it
+    name    : str — the value of `energyBackend` in cryal.in that selects it
     aliases : tuple — alternative spellings accepted for `name`
     """
 

@@ -1,8 +1,8 @@
 # What the source distribution carries beyond the package itself: the example
-# run (INPUT.txt, examples/, in_v3.lammps), the documentation, the citation
+# run (cryal.in, examples/, in_v3.lammps), the documentation, the citation
 # metadata, the verified pins, and the test suite -- an sdist should be enough
 # to reproduce a run and to check the code, not only to import it.
-include INPUT.txt
+include cryal.in
 include in_v3.lammps
 include examples/benzene.xyz
 include requirements.txt

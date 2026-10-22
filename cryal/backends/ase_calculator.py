@@ -67,7 +67,7 @@ def _import_dotted(path: str):
     Import 'package.module.attribute' and return the attribute.
 
     Raises ValueError with an actionable message on anything that goes wrong,
-    because this is user input from INPUT.txt.
+    because this is user input from cryal.in.
     """
     if not path or "." not in path:
         raise ValueError(

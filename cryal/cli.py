@@ -15,8 +15,8 @@
 """
 cli.py — the command line, as `cryal` and as `python run_cryal.py`.
 
-    cryal                    # reads INPUT.txt in the current directory
-    cryal my_INPUT.txt       # reads a custom input file
+    cryal                    # reads cryal.in in the current directory
+    cryal my_run.in          # reads a custom input file
     cryal --resume           # continue an interrupted run from its output_dir
 
 This module holds what `run_cryal.py` used to hold, so that installing the
@@ -36,9 +36,9 @@ def usage() -> str:
         prog = f"python {prog}"
     return f"""CrYAL — Crystal Structure Prediction via Active Learning
 
-usage: {prog} [INPUT.txt] [--resume] [--version]
+usage: {prog} [cryal.in] [--resume] [--version]
 
-  INPUT.txt     configuration file (default: INPUT.txt in the current directory)
+  cryal.in      configuration file (default: cryal.in in the current directory)
   --resume, -r  continue an interrupted run from its outputDir
   --version     print the version and exit
   --help, -h    print this message and exit
@@ -58,10 +58,10 @@ def main(argv=None):
         return 0
 
     # --resume can be passed anywhere on the command line; it forces
-    # continuation of an existing run regardless of the INPUT.txt setting.
+    # continuation of an existing run regardless of the cryal.in setting.
     args = [a for a in argv if a not in ("--resume", "-r")]
     resume_flag = any(a in ("--resume", "-r") for a in argv)
-    input_file = args[0] if args else "INPUT.txt"
+    input_file = args[0] if args else "cryal.in"
 
     if not os.path.exists(input_file):
         print(f"ERROR: Input file not found: {input_file}")

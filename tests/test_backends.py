@@ -196,7 +196,7 @@ class TestConfigSelection(unittest.TestCase):
             os.unlink(p)
 
     def _write(self, body):
-        fd, path = tempfile.mkstemp(suffix="_INPUT.txt")
+        fd, path = tempfile.mkstemp(suffix="_cryal.in")
         with os.fdopen(fd, "w") as f:
             f.write(body)
         self._paths.append(path)

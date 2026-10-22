@@ -73,18 +73,18 @@ cell, which is safe only because its single caller is off by default.
 ## Usage
 
 ```bash
-python run_cryal.py [INPUT.txt]      # from a checkout; INPUT.txt is the default
+python run_cryal.py [cryal.in]       # from a checkout; cryal.in is the default
 python run_cryal.py --resume         # continue an interrupted run
 
-cryal [INPUT.txt]                    # the same thing, once installed
+cryal [cryal.in]                     # the same thing, once installed
 cryal --resume
 ```
 
-The repository ships a runnable example — `INPUT.txt`, `examples/benzene.xyz`
+The repository ships a runnable example — `cryal.in`, `examples/benzene.xyz`
 and `in_v3.lammps` — chosen so that a clone can be exercised end to end without
 supplying anything. **The molecule you study is your own input and does not
 live here**: point `moleculeFile` at your own XYZ, and scale `minCellAxis` and
-the density window to it. `specOrder` in `INPUT.txt` and `pair_coeff`/`mass` in
+the density window to it. `specOrder` in `cryal.in` and `pair_coeff`/`mass` in
 the LAMMPS script must list the same elements in the same order, which a test
 checks for the shipped pair.
 
@@ -95,7 +95,7 @@ one that was never interrupted.
 
 ## Configuration
 
-`INPUT.txt` uses a USPEX-style format — `% SECTION` headers and `KEY = VALUE`
+`cryal.in` uses a USPEX-style format — `% SECTION` headers and `KEY = VALUE`
 assignments. The sections are `GENERAL`, `ACTIVE_LEARNING`, `SPACE_GROUPS`,
 `VOLUME`, `CELL`, `BETA_MONOCLINIC`, `GP`, `CHPI_OPTIMIZER`, `CONTACTS`,
 `SEEDS` and `INTEGRITY`; every key is documented inline in the shipped file.
@@ -116,7 +116,7 @@ starts from PyXtal alone.
 |---|---|
 | `run_cryal.py` | entry point for a checkout (wrapper over `cryal/cli.py`) |
 | `cryal/cli.py` | the command line, installed as `cryal` |
-| `cryal/config.py` | `INPUT.txt` parser → configuration dataclass |
+| `cryal/config.py` | `cryal.in` parser → configuration dataclass |
 | `cryal/structure_gen.py` | symmetry-aware generation at a target volume |
 | `cryal/backends/` | selectable energy backends (`base.py` holds the contract) |
 | `cryal/lammps_runner.py` | compatibility shim for the pre-backends API |
@@ -128,7 +128,7 @@ starts from PyXtal alone.
 | `cryal/chpi_optimizer.py` | optional geometric CH–π contact optimizer |
 | `cryal/utils.py` | structure I/O, integrity and contact checks |
 | `cryal/tools/` | maintenance utilities (the ML-IAP model patcher) |
-| `examples/` | the example molecule (benzene) for the shipped `INPUT.txt` |
+| `examples/` | the example molecule (benzene) for the shipped `cryal.in` |
 | `pyproject.toml` | packaging metadata: dependency bounds, console scripts |
 
 ## Notes on the method
@@ -156,7 +156,7 @@ starts from PyXtal alone.
 
 ## Energy backends
 
-`energyBackend` in `INPUT.txt` chooses the engine that relaxes each candidate
+`energyBackend` in `cryal.in` chooses the engine that relaxes each candidate
 and returns its energy:
 
 | value | engine |

@@ -40,7 +40,7 @@ Installation is *not* the ORCA-external route. See INSTALL.md: CrYAL drives UMA
 in this process through ASE, and needs neither the Flask server nor the ORCA
 external-tools client.
 
-Configuration (INPUT.txt):
+Configuration (cryal.in):
     energyBackend = uma
 
     % BACKEND_UMA

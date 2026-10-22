@@ -123,7 +123,7 @@ class TestAnisotropyWithEqualAxes(unittest.TestCase):
 class TestConfigRejectsUnsupportedGroups(unittest.TestCase):
 
     def _load(self, groups, weights):
-        fd, path = tempfile.mkstemp(suffix="_INPUT.txt")
+        fd, path = tempfile.mkstemp(suffix="_cryal.in")
         with os.fdopen(fd, "w") as f:
             f.write("% GENERAL\nmoleculeFile = examples/benzene.xyz\nZ = 4\n"
                     f"% SPACE_GROUPS\nspaceGroups = {groups}\nsgWeights = {weights}\n")

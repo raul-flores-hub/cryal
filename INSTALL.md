@@ -42,7 +42,7 @@ fails at the first force evaluation with:
 AttributeError: 'MLIAPDataPy' object has no attribute 'forward_exchange'
 ```
 
-And the run command must carry the Kokkos flags, in `INPUT.txt`:
+And the run command must carry the Kokkos flags, in `cryal.in`:
 
 ```
 lammpsCommand = lmp -k on g 1 -sf kk -pk kokkos newton on neigh half
