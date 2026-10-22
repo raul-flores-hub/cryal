@@ -17,6 +17,11 @@ gp_model.py — Gaussian Process surrogate model and Expected Improvement.
 
 The GP learns the mapping:
   features = [a, b, c, alpha, beta, gamma, density]  →  energy (eV)
+With gp.anisotropy = true an eighth feature is appended: the anisotropy
+(longest / shortest cell axis). The GP already sees a, b and c, but an ARD
+kernel models one length scale per axis and represents a ratio between axes
+poorly; the explicit feature lets it learn "elongated cells are favoured"
+directly, and the generator then reproduces the suggested anisotropy.
 
 Training uses relative energies (E - E_min) to improve numerical conditioning.
 The kernel is Matérn(nu=2.5) × ConstantKernel + WhiteKernel.
@@ -50,24 +55,42 @@ warnings.filterwarnings('ignore')
 # ---------------------------------------------------------------------------
 
 FEATURE_NAMES = ['a', 'b', 'c', 'alpha', 'beta', 'gamma', 'density']
+ANISOTROPY_NAME = 'anisotropy'
 
 
-def features_from_record(record: dict) -> np.ndarray:
+def anisotropy(a: float, b: float, c: float) -> float:
+    """Longest over shortest cell axis (>= 1)."""
+    return max(a, b, c) / min(a, b, c)
+
+
+def feature_names(use_anisotropy: bool = False) -> List[str]:
+    return FEATURE_NAMES + ([ANISOTROPY_NAME] if use_anisotropy else [])
+
+
+def features_from_record(record: dict, use_anisotropy: bool = False) -> np.ndarray:
     """
-    Extract the 7-dimensional feature vector from a database record.
+    Extract the feature vector from a database record: 7 features, or 8 with
+    the anisotropy appended.
     record must have keys: a, b, c, alpha, beta, gamma, density.
     """
-    return np.array([record['a'], record['b'], record['c'],
-                     record['alpha'], record['beta'], record['gamma'],
-                     record['density']])
+    x = [record['a'], record['b'], record['c'],
+         record['alpha'], record['beta'], record['gamma'],
+         record['density']]
+    if use_anisotropy:
+        x.append(anisotropy(record['a'], record['b'], record['c']))
+    return np.array(x)
 
 
-def features_from_atoms(atoms, Z: int, mol_weight: float) -> np.ndarray:
+def features_from_atoms(atoms, Z: int, mol_weight: float,
+                        use_anisotropy: bool = False) -> np.ndarray:
     """Extract features directly from an ASE Atoms object."""
     from .utils import compute_density
     cp = atoms.cell.cellpar()
     rho = compute_density(atoms, Z, mol_weight)
-    return np.array([cp[0], cp[1], cp[2], cp[3], cp[4], cp[5], rho])
+    x = [cp[0], cp[1], cp[2], cp[3], cp[4], cp[5], rho]
+    if use_anisotropy:
+        x.append(anisotropy(cp[0], cp[1], cp[2]))
+    return np.array(x)
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +110,12 @@ class GPSurrogate:
     n_train   : number of training points
     """
 
-    def __init__(self, kernel_type: str = "matern25", n_restarts: int = 5):
+    def __init__(self, kernel_type: str = "matern25", n_restarts: int = 5,
+                 use_anisotropy: bool = False):
         self.kernel_type = kernel_type
         self.n_restarts  = n_restarts
+        self.use_anisotropy = use_anisotropy
+        self.n_features  = len(feature_names(use_anisotropy))
         self.gp          = None
         self.scaler_X    = StandardScaler()
         self.scaler_y    = StandardScaler()
@@ -99,10 +125,10 @@ class GPSurrogate:
 
     def _build_kernel(self):
         if self.kernel_type == "rbf":
-            base = RBF(length_scale=np.ones(7),
+            base = RBF(length_scale=np.ones(self.n_features),
                        length_scale_bounds=(1e-2, 1e2))
         else:   # matern25 (default, more robust)
-            base = Matern(length_scale=np.ones(7),
+            base = Matern(length_scale=np.ones(self.n_features),
                           length_scale_bounds=(1e-2, 1e2), nu=2.5)
         return (ConstantKernel(1.0, (1e-3, 1e3)) * base
                 + WhiteKernel(noise_level=1e-2, noise_level_bounds=(1e-6, 1e1)))
@@ -115,7 +141,7 @@ class GPSurrogate:
         if len(records) < 5:
             raise ValueError(f"Need at least 5 records to train GP; got {len(records)}")
 
-        X_raw = np.array([features_from_record(r) for r in records])
+        X_raw = np.array([features_from_record(r, self.use_anisotropy) for r in records])
         y_raw = np.array([r['energy'] for r in records])
 
         self.e_min = y_raw.min()
@@ -138,7 +164,7 @@ class GPSurrogate:
         try:
             self._length_scales = self.gp.kernel_.k1.k2.length_scale
             if np.isscalar(self._length_scales):
-                self._length_scales = np.full(7, self._length_scales)
+                self._length_scales = np.full(self.n_features, self._length_scales)
         except Exception:
             self._length_scales = None
 
@@ -164,7 +190,7 @@ class GPSurrogate:
             return None
         imp = 1.0 / self._length_scales
         imp /= imp.sum()
-        return {name: float(v) for name, v in zip(FEATURE_NAMES, imp)}
+        return {name: float(v) for name, v in zip(feature_names(self.use_anisotropy), imp)}
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +252,9 @@ def maximize_ei(gp: GPSurrogate, database_records: List[dict],
                     cfg.density_max * 1.1, n),
     ])
 
+    if gp.use_anisotropy:
+        C = np.column_stack([C, C[:, :3].max(axis=1) / C[:, :3].min(axis=1)])
+
     # Filter: reject volumes inconsistent with density
     V_from_density = (cfg.Z * cfg.mol_weight / NA) / (C[:, 6] * 1e-24)
     V_from_abc     = C[:, 0] * C[:, 1] * C[:, 2]  # orthorhombic approximation
@@ -266,6 +295,8 @@ def maximize_ei(gp: GPSurrogate, database_records: List[dict],
             'E_std':   float(std[i]),
             'EI':      float(ei_vals[i]),
         })
+        if gp.use_anisotropy:
+            suggestions[-1]['anisotropy'] = float(C[i, 7])
 
     return suggestions
 
@@ -290,11 +321,15 @@ def gp_report(gp: GPSurrogate, suggestions: List[dict],
 
     if suggestions:
         lines.append(f"  Top {min(5, len(suggestions))} EI suggestions:")
+        an = 'anisotropy' in suggestions[0]
         lines.append(f"    {'beta':>8} {'density':>9} {'volume':>8} "
-                     f"{'E_pred':>12} {'±':>8} {'EI':>10}")
+                     + (f"{'aniso':>6} " if an else "")
+                     + f"{'E_pred':>12} {'±':>8} {'EI':>10}")
         for s in suggestions[:5]:
             lines.append(f"    {s['beta']:>8.1f} {s['density']:>9.3f} "
-                         f"{s['volume']:>8.0f} {s['E_pred']:>12.4f} "
+                         f"{s['volume']:>8.0f} "
+                         + (f"{s['anisotropy']:>6.2f} " if an else "")
+                         + f"{s['E_pred']:>12.4f} "
                          f"{s['E_std']:>8.4f} {s['EI']:>10.6f}")
 
     report = "\n".join(lines)

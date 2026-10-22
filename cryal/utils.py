@@ -39,6 +39,15 @@ def setup_logger(name: str, log_file: str, level: str = "INFO") -> logging.Logge
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
+    # This logger owns its output; it must not also travel to the root logger.
+    # Nothing in a plain run installs a root handler, so leaving this on looks
+    # harmless -- until a backend does. Building the UMA calculator calls
+    # logging.basicConfig() deep inside fairchem, and from that line onward
+    # every CrYAL message is printed twice, once in this format and once as
+    # `INFO:cryal:...`. It only shows up when the server relaxes in-process,
+    # so a fully dispatched run never sees it.
+    logger.propagate = False
+
     if not logger.handlers:
         # Console handler
         ch = logging.StreamHandler()
@@ -268,11 +277,17 @@ def check_bond_integrity(atoms, min_bond: float = 0.8) -> bool:
     for i in range(len(atoms)):
         nbrs, offsets = nl.get_neighbors(i)
         for j, offset in zip(nbrs, offsets):
-            if j > i:
-                pos_j_image = atoms.positions[j] + np.dot(offset, cell)
-                d = np.linalg.norm(pos_j_image - atoms.positions[i])
-                if d < min_bond:
-                    return False
+            # No `j > i` filter here. With bothways=False ASE already reports
+            # every pair exactly once, but not necessarily from the lower
+            # index: a contact across the periodic boundary can be listed at
+            # the higher index with a non-zero offset. Filtering on j > i
+            # therefore skipped exactly the periodic overlaps this gate exists
+            # to catch. It also drops the case j == i, an atom clashing with
+            # its own image in an absurdly small cell.
+            pos_j_image = atoms.positions[j] + np.dot(offset, cell)
+            d = np.linalg.norm(pos_j_image - atoms.positions[i])
+            if d < min_bond:
+                return False
     return True
 
 
