@@ -151,6 +151,7 @@ starts from PyXtal alone.
 | `cryal/backends/` | selectable energy backends (`base.py` holds the contract) |
 | `cryal/lammps_runner.py` | compatibility shim for the pre-backends API |
 | `cryal/gp_model.py` | GP surrogate and Expected-Improvement acquisition |
+| `cryal/sg_kernel.py` | hierarchical space-group kernel (group, Bravais lattice, crystal family); not yet used by the GP |
 | `cryal/active_learning.py` | the active-learning loop |
 | `cryal/backends/uma.py` | UMA as a named backend, with its mandatory task |
 | `cryal/parallel.py` | distributing a cycle's candidates over several machines |
