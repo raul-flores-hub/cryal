@@ -24,12 +24,13 @@ GP a correlation between two groups that depends on what they share:
              = rho_fam    same crystal family           (m, o, t, h, c, a)
              = rho_any    nothing in common
 
-with 1 >= rho_lat >= rho_fam >= rho_any >= 0. The levels nest: each of the
-14 Bravais lattices lies in one of the 6 crystal families (the hexagonal
-family holding both hP and hR), which is what keeps the ordering, and
-positive semi-definiteness, true by construction rather than by constraint.
-A crystal system level is deliberately absent: hP spans the trigonal and
-hexagonal systems, so lattice and system do not nest.
+with 1 >= rho_lat >= rho_fam >= rho_any >= 0. Positive semi-definiteness
+holds for any positive weights (see Parametrisation); the ordering holds
+because the levels nest: each of the 14 Bravais lattices lies in one of the
+6 crystal families (the hexagonal family holding both hP and hR). A crystal
+system level is absent for that reason: hP spans the trigonal and hexagonal
+systems, so lattice and system do not nest, and with both the correlations
+would no longer form one ordered chain.
 
 Why hierarchical. A run may draw from every group valid for its Z, thirty to
 a hundred of them, with a handful of structures each and none in some. With
@@ -44,7 +45,8 @@ Parametrisation. Three positive weights, one per level below "same group":
     S        = 1 + w_lattice + w_family + w_any
 
 where d_* is 1 when s and s' share that level. Each d_* is a block
-indicator matrix, so k is a positively weighted sum of PSD matrices, and
+indicator matrix, PSD for any partition of the groups, nested or not, so k
+is a positively weighted sum of PSD matrices, and
 k(s, s) = 1 for every group: the amplitude belongs to the continuous part
 of the product (ConstantKernel), not to this one. The weight of "same
 group" is fixed at 1; letting it float too would only rescale S, a flat
@@ -66,6 +68,12 @@ belong to. A level is only learnt where the data hold at least two groups
 that share it: with a single group of some lattice, an offset of that
 lattice and one of that group fit the data equally well, and the share
 between those two levels is the prior's call, not the data's.
+
+What s is. The group a structure was generated in, not the symmetry it
+keeps after relaxation: that is the group the generator can be asked for,
+so it is the one a suggestion must name. Structures without one (seeds,
+perturbations without a recorded parent) are left out of the training set;
+the kernel refuses them rather than inventing a category for them.
 
 Use. The kernel reads the space-group number (1-230) from one column of X,
 unscaled, and ignores the others; OnColumns restricts a continuous kernel to
