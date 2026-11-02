@@ -6,8 +6,8 @@
 # is in the environment. requirements.txt pins the *exact* versions this
 # workflow is verified on, for reproducing a run rather than for installing a
 # library. INSTALL.md, "Version drift", explains why the distinction matters
-# here: PyXtal in particular consumes the random stream differently across
-# releases, so a fixed seed reproduces space-group draws but not geometries.
+# here, and why a fixed seed does not reproduce a run even on these pins:
+# PyXtal places molecules with a generator seeded from the operating system.
 #
 # LAMMPS, torch and mace-torch are deliberately absent from both. LAMMPS runs
 # as an external process with its own embedded interpreter, and pulling torch

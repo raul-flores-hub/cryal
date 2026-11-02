@@ -303,13 +303,19 @@ that produced the published run. The published results were computed with an
 earlier `mace-torch`; the two stacks were compared with the deterministic check
 above and agree.
 
-One consequence worth knowing: **a fixed random seed does not reproduce
-identical geometries across PyXtal versions.** PyXtal 1.1.3 and NumPy 2.4.2
-consume the random stream differently from the 2026-06 releases. The sequence of
-space-group draws is reproducible; the geometries placed inside them are not. So
-two runs configured identically on different library versions are independent
-trajectories, not paired replicas — which is how the surrogate ablation reported
-in the article had to be described.
+One consequence worth knowing: **a fixed random seed does not reproduce a run,
+not even on the same library versions.** PyXtal places the molecules with a
+generator of its own, seeded from the operating system rather than from
+`general.random_seed` (CrYAL passes it no `random_state`), so the geometries
+differ from the first structure on. And because a placement that fails is
+retried with fresh draws from the seeded stream, the space groups, volumes and
+cells part ways too as soon as one run fails an attempt the other did not:
+generating 20 benzene structures twice with one seed, on one machine with
+PyXtal 1.1.3, gave 1 identical cell out of 20 and no identical geometry. Library
+versions add to this — PyXtal and NumPy have consumed the random stream
+differently across releases — but are not its cause. So two runs configured
+identically are independent trajectories, not paired replicas — which is how
+the surrogate ablation reported in the article had to be described.
 
 ## Reference machine
 
