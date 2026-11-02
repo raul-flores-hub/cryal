@@ -90,6 +90,12 @@ initial_structures    = 100           # structures generated in cycle 0
 structures_per_cycle  = 50            # structures generated per AL cycle
 pool_size             = 20            # best structures kept as seeds between cycles
 max_no_improve_cycles = 3             # stop if best energy unchanged for N cycles
+ga_fraction           = 0.0           # BACH + GA: share of each cycle's random half bred
+                                      # from the best structures so far by the [ga]
+                                      # operators (crossover, strain, rotation,
+                                      # translation; immigrants get no share, the
+                                      # random structures left are the immigrants).
+                                      # 0 = BACH as published. Cycle 0 is unaffected.
 
 [space_groups]
 # group = weight. Weights based on CSD frequency statistics for organic
@@ -150,7 +156,9 @@ ei_candidates  = 50000                # random candidates evaluated for EI maxim
 ei_suggestions = 20                   # top EI candidates used to bias next generation
 
 [ga]
-# Only read when general.algorithm = "ga". The budget is [active_learning]'s:
+# Read when general.algorithm = "ga", and by the BACH + GA hybrid
+# (active_learning.ga_fraction > 0), which uses population_size, the
+# tournament, the operator settings and the duplicate tolerances. The budget is [active_learning]'s:
 # cycles = generations, initial_structures = generation 0 (generated exactly as
 # BACH's cycle 0), structures_per_cycle = children per generation,
 # max_no_improve_cycles = the stopping rule. A GA run and a BACH run from one

@@ -92,6 +92,10 @@ class Config:
     structures_per_cycle:int   = 50
     pool_size:           int   = 20
     max_no_improve_cycles:int  = 3
+    # BACH + GA: the share of each cycle's random (unbiased) structures that
+    # is bred instead by the genetic operators of [ga], from the best
+    # structures found so far. 0 is BACH as published.
+    ga_fraction:         float = 0.0
 
     # --- SPACE GROUPS ---
     space_groups:        List[int]   = field(default_factory=lambda: [14,2,19,15,4,9,33,61])
@@ -328,6 +332,13 @@ def _nonneg(path, v):
     return v
 
 
+def _unit(path, v):
+    v = _float(path, v)
+    if not 0.0 <= v <= 1.0:
+        raise ValueError(f"{path}: must be in [0, 1], got {v}")
+    return v
+
+
 def _fraction(path, v):
     v = _float(path, v)
     if not 0.0 < v <= 1.0:
@@ -337,6 +348,8 @@ def _fraction(path, v):
 
 #: The variation operators of cryal/genetic.py, in the order it reports them.
 GA_OPERATORS = ("crossover", "strain", "rotation", "translation", "immigrant")
+#: The ones that breed from parents, which is all the BACH + GA hybrid uses.
+GA_BREEDING = GA_OPERATORS[:4]
 
 
 def _ga_operators(path, v):
@@ -402,6 +415,7 @@ _SCHEMA = {
         "structures_per_cycle": ("structures_per_cycle", _int),
         "pool_size":            ("pool_size", _int),
         "max_no_improve_cycles": ("max_no_improve_cycles", _int),
+        "ga_fraction":          ("ga_fraction", _unit),
     },
     "space_groups": {
         "weights":              (("space_groups", "sg_weights"), _sg_weights),
@@ -551,6 +565,18 @@ def load_config(filepath: str = "cryal.toml") -> Config:
     cfg = Config()
     _apply(doc, cfg)
 
+    if cfg.ga_fraction > 0:
+        if cfg.algorithm == "ga":
+            raise ValueError("active_learning.ga_fraction: mixes the genetic "
+                             "operators into BACH; with general.algorithm = "
+                             "\"ga\" every candidate is bred already. Set it "
+                             "to 0 or use algorithm = \"bach\"")
+        if not any(cfg.ga_operators[k] > 0 for k in GA_BREEDING):
+            raise ValueError("active_learning.ga_fraction: ga.operators gives "
+                             "no weight to " + ", ".join(GA_BREEDING) + "; "
+                             "immigrants alone would only be more random "
+                             "structures")
+
     if cfg.beta_distribution == "triangular" and cfg.beta_mode is None:
         warnings.warn("monoclinic_beta.distribution = triangular requires "
                       "monoclinic_beta.mode; falling back to uniform")
@@ -660,6 +686,12 @@ def print_config_summary(cfg: Config, logger=None):
         f"  GP surrogate:    {'ON' if cfg.use_gp else 'OFF — no EI bias (ablation control)'}"
         + (" + anisotropy feature" if cfg.use_gp and cfg.gp_anisotropy else ""),
     ]
+    if cfg.algorithm == "bach" and cfg.ga_fraction > 0:
+        # Only for a hybrid run: a run without it prints what it always did.
+        ops = ", ".join(f"{k} {cfg.ga_operators[k]:g}" for k in GA_BREEDING
+                        if cfg.ga_operators[k] > 0)
+        lines.append(f"  GA in BACH:      {cfg.ga_fraction:g} of the random part "
+                     f"bred by GA ({ops}); population {cfg.ga_population_size}")
     if cfg.algorithm == "ga":
         # Said in place of the GP line, which a GA run does not read. A BACH
         # run prints exactly the summary it printed before the GA existed.

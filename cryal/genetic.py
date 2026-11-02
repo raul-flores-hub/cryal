@@ -100,7 +100,7 @@ from ase.io import read
 from .active_learning import (CrystalDatabase, _apply_chpi, _evaluate_batch,
                               _reconstruct_resume_state, _save_cycle_report)
 from .backends import get_backend, get_reference_bonds
-from .config import GA_OPERATORS, Config, print_config_summary
+from .config import GA_BREEDING, GA_OPERATORS, Config, print_config_summary
 from .parallel import build_pool
 from .structure_gen import generate_structures, load_seeds
 from .utils import check_bond_integrity, setup_logger
@@ -411,20 +411,22 @@ class Contacts:
                                         cfg.min_hx_distance)
         self.cutoff = max(self.hh, self.heavy, self.hx)
 
-    def pairs(self, atoms: Atoms, margin: float = 0.0, self_images: bool = True):
+    def pairs(self, atoms: Atoms, margin: float = 0.0, self_images: bool = True,
+              shifts: bool = False):
         """
         (i, j, d, D, need) for every listed pair closer than the cutoff +
         margin: atoms of different molecules, and with `self_images` also a
         molecule against its own periodic images. Each pair appears both ways.
+        With `shifts`, the lattice shift S of each pair is appended.
         """
         i, j, d, D, S = image_pairs(atoms.positions, atoms.cell.array,
                                     self.cutoff + margin)
         same = self.molid[i] == self.molid[j]
         keep = ~same | (self_images & np.any(S != 0, axis=1))
-        i, j, d, D = i[keep], j[keep], d[keep], D[keep]
+        i, j, d, D, S = i[keep], j[keep], d[keep], D[keep], S[keep]
         hi, hj = self.h[i], self.h[j]
         need = np.where(hi & hj, self.hh, np.where(~hi & ~hj, self.heavy, self.hx))
-        return i, j, d, D, need
+        return (i, j, d, D, need, S) if shifts else (i, j, d, D, need)
 
     def clear(self, atoms: Atoms, self_images: bool = True) -> bool:
         """
@@ -487,6 +489,41 @@ def relieve(g: Genome, mol: Molecule, contacts: Contacts, iters: int = 100,
     return best
 
 
+def stretch(g: Genome, mol: Molecule, contacts: Contacts, max_volume: float,
+            rounds: int = 5, margin: float = 0.05) -> Genome:
+    """
+    Lengthen the lattice vectors along which a molecule meets its own
+    periodic image too closely.
+
+    A molecule carried from its parent's cell into another one — a crossover
+    child's blended cell, a strained one — can be longer than the new cell is
+    across, in its own orientation. That clash is between a molecule and
+    itself, so pushing molecules apart cannot touch it, and an isotropic
+    expansion pays for it in every direction at once. Here only the vectors
+    the image shift runs along are lengthened, each by what the worst such
+    contact lacks (need - d, plus a margin) — added, not multiplied: a
+    0.9 Å contact through a 5.7 Å vector wants 1.6 Å more, not a vector 2.7
+    times as long. Repeated until no such contact is left, `rounds` are spent,
+    or the volume would exceed max_volume (the largest of
+    volume.expansion_factors).
+    """
+    g = g.copy()
+    for _ in range(rounds):
+        i, j, d, _, need, S = contacts.pairs(g.to_atoms(mol), shifts=True)
+        own = (contacts.molid[i] == contacts.molid[j]) & (d < need)
+        if not own.any():
+            break
+        grow = np.zeros(3)
+        for s, lack in zip(S[own], need[own] - d[own] + margin):
+            grow[s != 0] = np.maximum(grow[s != 0], lack)
+        lengths = np.linalg.norm(g.cell, axis=1)
+        cell = g.cell * ((lengths + grow) / lengths)[:, None]
+        if abs(np.linalg.det(cell)) > max_volume:
+            break
+        g.cell = cell
+    return g
+
+
 def realize(child: Genome, mol: Molecule, cfg: Config) -> Tuple[Optional[Atoms], str]:
     """
     Turn a child into a structure the backend can take, or (None, why).
@@ -508,6 +545,7 @@ def realize(child: Genome, mol: Molecule, cfg: Config) -> Tuple[Optional[Atoms],
         if min(np.linalg.norm(g.cell, axis=1)) < cfg.min_cell_axis:
             continue
         why = "contacts"
+        g = stretch(g, mol, contacts, child.volume * max(cfg.volume_expansion_factors))
         atoms = relieve(g, mol, contacts).to_atoms(mol)
         if contacts.clear(atoms) and check_bond_integrity(atoms):
             return atoms, ""
@@ -581,13 +619,15 @@ def load_parents(population: List[Dict], mol: Molecule, logger) -> Dict[int, Gen
 
 def breed(population: List[Dict], genomes: Dict[int, Genome], n: int,
           mol: Molecule, cfg: Config, rng: np.random.Generator,
-          logger) -> List[Dict]:
+          logger, weights: Optional[Dict[str, float]] = None) -> List[Dict]:
     """
     n candidates for the next generation, as dicts the evaluation pipeline
-    takes: {'atoms', 'space_group', 'source', 'parents'}.
+    takes: {'atoms', 'space_group', 'source', 'parents'}. `weights` replaces
+    ga.operators (the BACH + GA hybrid gives immigrants none).
     """
+    weights = dict(cfg.ga_operators if weights is None else weights)
     population = [r for r in population if r['id'] in genomes]
-    counts = allocate(n, cfg.ga_operators)
+    counts = allocate(n, weights)
     if not population:
         # Nothing to breed from (every candidate so far was rejected): this
         # generation is all immigrants.
@@ -596,7 +636,7 @@ def breed(population: List[Dict], genomes: Dict[int, Genome], n: int,
     elif len(population) < 2 and counts['crossover']:
         # One parent cannot be crossed with anything. Its slots go to the
         # mutations, in their own proportions, or to immigrants without any.
-        mutations = {k: cfg.ga_operators[k] for k in ("strain", "rotation", "translation")}
+        mutations = {k: weights[k] for k in ("strain", "rotation", "translation")}
         moved = counts.pop('crossover')
         extra = allocate(moved, mutations) if sum(mutations.values()) > 0 \
             else {'immigrant': moved}
@@ -656,42 +696,74 @@ def breed(population: List[Dict], genomes: Dict[int, Genome], n: int,
     return out
 
 
+def bach_children(records: List[Dict], n: int, mol: Molecule, cfg: Config,
+                  rng: np.random.Generator, logger) -> List[Dict]:
+    """
+    BACH + GA (active_learning.ga_fraction): n of a BACH cycle's random
+    structures bred instead from the best distinct structures found so far,
+    with the breeding operators of ga.operators in their proportions.
+    Immigrants get no share: in this mode the random structures that remain
+    are the immigrants. Fewer than n come back when children cannot be made
+    or there is nothing to breed from; the caller fills the gap.
+    """
+    weights = {k: (cfg.ga_operators[k] if k in GA_BREEDING else 0.0) for k in GA_OPERATORS}
+    population = distinct_lowest(records, cfg.ga_population_size, cfg.Z,
+                                 cfg.ga_duplicate_energy, cfg.ga_duplicate_density)
+    genomes = load_parents(population, mol, logger)
+    if not genomes:
+        return []
+    children = breed(population, genomes, n, mol, cfg, rng, logger, weights=weights)
+    return [c for c in children if not c['source'].startswith('ga_immigrant')]
+
+
 # ---------------------------------------------------------------------------
 # Reports
 # ---------------------------------------------------------------------------
 
-def _operator(source: str) -> str:
-    """The operator behind a record's source; generation 0 is 'initial'."""
+#: Where a record came from, in the order the reports list them.
+FAMILIES = ("biased", "random", "perturb", "seed") + GA_OPERATORS + ("other",)
+
+
+def source_family(source: str) -> str:
+    """
+    Where a record came from, from its source: a GA operator, or for the
+    generator's structures 'biased' (toward a GP suggestion), 'random',
+    'perturb' (a perturbed seed or, from cycle 1 on, a perturbed incumbent
+    of the pool) and 'seed'.
+    """
     if source.startswith('ga_'):
         for op in GA_OPERATORS:
             if source.startswith(f'ga_{op}'):
                 return op
-    return 'initial'
+    for family in ("biased", "random", "perturb", "seed"):
+        if source.startswith(family):
+            return family
+    return 'other'
 
 
-def operator_stats(records: List[Dict], cycle: Optional[int] = None) -> Dict[str, Dict]:
-    """Per operator: candidates kept and their best energy (one cycle or all)."""
+def source_stats(records: List[Dict], cycle: Optional[int] = None) -> Dict[str, Dict]:
+    """Per source family: candidates kept and their best energy (one cycle or all)."""
     stats: Dict[str, Dict] = {}
     for r in records:
         if cycle is not None and r['cycle'] != cycle:
             continue
-        s = stats.setdefault(_operator(r['source']), {'kept': 0, 'best_energy': None})
+        s = stats.setdefault(source_family(r['source']), {'kept': 0, 'best_energy': None})
         s['kept'] += 1
         if s['best_energy'] is None or r['energy'] < s['best_energy']:
             s['best_energy'] = r['energy']
-    return stats
+    return {f: stats[f] for f in FAMILIES if f in stats}
 
 
-def _report_generation(db: CrystalDatabase, cycle: int, best_before, logger):
-    stats = operator_stats(db.records, cycle)
-    for op in GA_OPERATORS:
-        if op in stats:
-            s = stats[op]
-            logger.info(f"    {op:<12} kept {s['kept']:>3}   best E={s['best_energy']:.4f} eV")
-    br = db.best_record()
-    if br and br['cycle'] == cycle and (best_before is None or br['energy'] < best_before):
-        logger.info(f"  New best from {_operator(br['source'])} "
-                    f"(parents {br.get('parents', [])})")
+def report_cycle(records: List[Dict], cycle: int, best_before, logger):
+    """What each source contributed this cycle, and which one found a new best."""
+    for f, s in source_stats(records, cycle).items():
+        logger.info(f"    {f:<12} kept {s['kept']:>3}   best E={s['best_energy']:.4f} eV")
+    if not records:
+        return
+    br = min(records, key=lambda r: r['energy'])
+    if br['cycle'] == cycle and (best_before is None or br['energy'] < best_before):
+        parents = f" (parents {br['parents']})" if br.get('parents') else ""
+        logger.info(f"  New best from {source_family(br['source'])}{parents}")
 
 
 def _save_final_report(db: CrystalDatabase, cfg: Config):
@@ -701,7 +773,7 @@ def _save_final_report(db: CrystalDatabase, cfg: Config):
         'num_cycles_run':  max(r['cycle'] for r in db.records) if db.records else 0,
         'best_energy':     db.best_energy(),
         'top_10':          db.top_n(10),
-        'operator_stats':  operator_stats(db.records),
+        'source_stats':    source_stats(db.records),
         'config': {
             'molecule':          cfg.molecule_file,
             'Z':                 cfg.Z,
@@ -842,19 +914,19 @@ def run(cfg: Config):
             n_ok = evaluate(structs, cycle)
             logger.info(f"Generation {cycle} complete: {n_ok}/{len(structs)} OK  "
                         f"[{time.time()-t0:.0f}s]")
-            _report_generation(db, cycle, best_now, logger)
+            report_cycle(db.records, cycle, best_now, logger)
             if db.best_energy() is not None:
                 br = db.best_record()
                 logger.info(f"Best so far: E={br['energy']:.4f} eV  "
                             f"rho={br['density']:.3f}  V={br['volume']:.0f} Å³  "
-                            f"(generation {br['cycle']}, {_operator(br['source'])})")
+                            f"(generation {br['cycle']}, {source_family(br['source'])})")
             _save_cycle_report(db, cycle, cfg.output_dir)
 
         logger.info("=" * 60)
         logger.info("GENETIC ALGORITHM COMPLETE")
         logger.info("=" * 60)
         logger.info(f"Total structures evaluated: {len(db)}")
-        for op, s in operator_stats(db.records).items():
+        for op, s in source_stats(db.records).items():
             best = f"{s['best_energy']:.4f}" if s['best_energy'] is not None else "-"
             logger.info(f"  {op:<12} kept {s['kept']:>4}   best E={best} eV")
         _save_final_report(db, cfg)

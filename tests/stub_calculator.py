@@ -63,19 +63,29 @@ class VolumeStub(Calculator):
     was given, but structures now differ in energy: denser is lower. That is
     enough of a landscape for a search to have something to find, which a
     constant energy is not.
+
+    With `v0` (Å³) the energy is lowest at that volume instead, rising
+    quadratically on both sides. Without it, a search drives its population
+    to the densest, thinnest cells the generator can make, which no real
+    potential rewards and where hardly any child fits.
     """
 
     implemented_properties = ["energy", "free_energy", "forces", "stress"]
 
-    def __init__(self, energy=-1000.0, per_A3=0.01, **kwargs):
+    def __init__(self, energy=-1000.0, per_A3=0.01, v0=None, **kwargs):
         super().__init__(**kwargs)
         self.e0 = float(energy)
         self.per_A3 = float(per_A3)
+        self.v0 = None if v0 is None else float(v0)
 
     def calculate(self, atoms=None, properties=("energy",),
                   system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
-        e = self.e0 + self.per_A3 * self.atoms.get_volume()
+        v = self.atoms.get_volume()
+        if self.v0 is None:
+            e = self.e0 + self.per_A3 * v
+        else:
+            e = self.e0 + self.per_A3 * (v - self.v0) ** 2 / self.v0
         self.results = {
             "energy": e,
             "free_energy": e,

@@ -29,7 +29,9 @@ Cycle k (k = 1 ... num_cycles):
   2. Maximize Expected Improvement to identify promising regions
      (the GP autonomously discovers favorable beta/density combinations)
   3. Generate new structures: half biased toward EI suggestions,
-     half random (to maintain exploration)
+     half random (to maintain exploration). With active_learning.ga_fraction
+     > 0, that share of the random half is bred instead from the best
+     structures so far by the genetic operators of [ga] (cryal/genetic.py)
   4. Apply CH-pi optimizer (optional)
   5. Evaluate with LAMMPS
   6. Update database
@@ -418,6 +420,15 @@ def run(cfg: Config):
 
         gp = GPSurrogate(kernel_type=cfg.gp_kernel, n_restarts=cfg.gp_n_restarts,
                          use_anisotropy=cfg.gp_anisotropy)
+
+        # BACH + GA (active_learning.ga_fraction). Built only when asked for,
+        # with a generator of its own so that the EI maximization draws what
+        # it would draw without it.
+        ga = None
+        if cfg.ga_fraction > 0:
+            from .genetic import Molecule
+            ga = {'mol': Molecule.from_file(cfg.molecule_file),
+                  'rng': np.random.default_rng([seed, 1])}
         suggestions = None
 
         # ====================================================================
@@ -503,9 +514,13 @@ def run(cfg: Config):
             # --- Generate new structures ---
             logger.info(f"Generating {cfg.structures_per_cycle} structures "
                         f"({'half biased' if suggestions else 'random'})...")
-            structs = generate_structures(cfg.molecule_file, cfg,
-                                          cfg.structures_per_cycle,
-                                          suggestions=suggestions, logger=logger)
+            n_ga = ga_slots(cfg.structures_per_cycle, bool(suggestions), cfg.ga_fraction)
+            if n_ga:
+                structs = _generate_with_ga(cfg, suggestions, n_ga, db, ga, logger)
+            else:
+                structs = generate_structures(cfg.molecule_file, cfg,
+                                              cfg.structures_per_cycle,
+                                              suggestions=suggestions, logger=logger)
 
             # Use top-N from database as additional seeds for this cycle
             pool_cifs = _export_pool(db, cfg, cycle)
@@ -534,6 +549,10 @@ def run(cfg: Config):
                 logger.info(f"Best so far: E={br['energy']:.4f} eV  "
                             f"rho={br['density']:.3f}  beta={br['beta']:.1f}°  "
                             f"V={br['volume']:.0f} Å³  (cycle {br['cycle']})")
+
+            if ga is not None:
+                from .genetic import report_cycle
+                report_cycle(db.records, cycle, best_now, logger)
 
             # Save per-cycle report
             _save_cycle_report(db, cycle, cfg.output_dir)
@@ -570,6 +589,42 @@ def run(cfg: Config):
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
+
+def ga_slots(n: int, has_suggestions: bool, ga_fraction: float) -> int:
+    """
+    How many of a cycle's n structures the genetic operators breed
+    (active_learning.ga_fraction): that share of the random part, which is
+    n - n // 2 when the GP made suggestions and all n when it did not —
+    the split generate_structures makes.
+    """
+    n_random = n - (n // 2 if has_suggestions else 0)
+    return int(round(ga_fraction * n_random))
+
+
+def _generate_with_ga(cfg: Config, suggestions, n_ga: int, db: CrystalDatabase,
+                      ga: Dict, logger) -> List[Dict]:
+    """
+    A cycle's structures with n_ga of its random ones bred by the GA: the
+    biased half exactly as without it, the random part short by n_ga, and the
+    children of the best structures so far in their place. Children that
+    cannot be made are replaced by random structures, so a cycle always asks
+    the backend for as many candidates as it would have without the GA.
+    """
+    from .genetic import bach_children
+    n = cfg.structures_per_cycle
+    n_random = n - (n // 2 if suggestions else 0) - n_ga
+    structs = generate_structures(cfg.molecule_file, cfg, n, suggestions=suggestions,
+                                  logger=logger, n_random=n_random)
+    logger.info(f"  GA: breeding {n_ga} of the {n_random + n_ga} random structures "
+                f"(active_learning.ga_fraction = {cfg.ga_fraction:g})")
+    children = bach_children(db.records, n_ga, ga['mol'], cfg, ga['rng'], logger)
+    if len(children) < n_ga:
+        short = n_ga - len(children)
+        logger.info(f"  GA: {short} child(ren) short — filled with random structures")
+        children += generate_structures(cfg.molecule_file, cfg, short,
+                                        suggestions=None, logger=logger)
+    return structs + children
+
 
 def _reconstruct_resume_state(db: CrystalDatabase, start_cycle: int):
     """

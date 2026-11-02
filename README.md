@@ -223,6 +223,28 @@ and `final_report.json` tallies what each operator contributed.
 Since the population is read from the database, a resumed GA run continues
 exactly where an uninterrupted one would have been.
 
+### BACH + GA
+
+Half of every BACH cycle is random, to keep exploring. `active_learning.ga_fraction`
+hands a share of that half to the genetic operators instead: those structures
+are bred from the best distinct structures found so far, with the crossover,
+strain, rotation and translation settings of `[ga]`.
+
+```toml
+[active_learning]
+structures_per_cycle = 50
+ga_fraction          = 0.5     # 25 GP-biased, 12 bred by GA, 13 random
+```
+
+The GP-biased half, the pool of perturbed incumbents and cycle 0 are untouched,
+immigrants get no share (the random structures left are the immigrants), and a
+child that cannot be made is replaced by a random structure, so a cycle asks
+for the same number of evaluations whatever the setting. With `gp.enabled =
+false` the whole batch is random and the share applies to all of it. The
+default, 0, is BACH as published. Each cycle's log lists what every source —
+biased, random, perturbed, each GA operator — contributed and which one found
+a new best.
+
 ## Energy backends
 
 `engine` in `[backend]` chooses the engine that relaxes each candidate

@@ -305,6 +305,23 @@ class TestOperators(Fixture):
         self.assertTrue(contacts.clear(atoms, self_images=False))
         self.assertFalse(contacts.clear(atoms))
 
+    def test_stretch_lengthens_only_the_axis_a_molecule_meets_itself_on(self):
+        path = os.path.join(self.tmp, "c2.xyz")
+        write_xyz(path, ["C", "C"], [[0, 0, 0], [1.3, 0, 0]])
+        mol = G.Molecule.from_file(path)
+        atoms = Atoms("C2", positions=[[1, 1, 1], [2.3, 1, 1]],
+                      cell=[3.4, 8.0, 8.0], pbc=True)      # 2.1 Å to its image along a
+        contacts = G.Contacts(mol, 1, self.cfg)
+        g = G.genome_from_atoms(atoms, mol)
+        out = G.stretch(g, mol, contacts, max_volume=2 * g.volume)
+        self.assertTrue(contacts.clear(out.to_atoms(mol)))
+        lengths = np.linalg.norm(out.cell, axis=1)
+        self.assertGreaterEqual(lengths[0], 1.3 + 2.5)     # bond + heavy contact
+        self.assertLess(lengths[0], 1.3 + 2.5 + 0.2)       # by what it lacked, no more
+        np.testing.assert_allclose(lengths[1:], [8.0, 8.0])
+        # And not at all past the volume it is allowed.
+        self.assertEqual(G.stretch(g, mol, contacts, max_volume=g.volume).volume, g.volume)
+
 
 class TestSelection(unittest.TestCase):
 
@@ -411,9 +428,12 @@ class TestRecords(unittest.TestCase):
 
 def run_config(output_dir, **kw):
     """A run small enough for the test suite: benzene, P-1, Z = 2, stub energy."""
+    # The volume window needs 1.05 g/cm³ inside it: 0.8 .. 1.6 does.
     cfg = Config(molecule_file=BENZENE, Z=2, random_seed=11, output_dir=output_dir,
                  energy_backend="ase",
                  ase_calculator="tests.stub_calculator.VolumeStub",
+                 # Lowest near 1.05 g/cm³, a density benzene actually has.
+                 ase_calculator_kwargs={"v0": 2 * 78.11 / 0.602214076 / 1.05},
                  ase_max_steps=5, energy_sanity_max=None,
                  num_cycles=2, initial_structures=6, structures_per_cycle=6,
                  max_no_improve_cycles=5,
@@ -466,13 +486,102 @@ class TestRun(unittest.TestCase):
         with open(os.path.join(out, "final_report.json")) as f:
             report = json.load(f)
         self.assertEqual(report['algorithm'], 'ga')
-        self.assertEqual(sum(s['kept'] for s in report['operator_stats'].values()),
+        self.assertEqual(sum(s['kept'] for s in report['source_stats'].values()),
                          len(recs))
 
         G.run(run_config(out, log_level="WARNING", num_cycles=3, resume=True))
         again = self.records(out)
         self.assertEqual(again[:len(recs)], recs)
         self.assertEqual({r['cycle'] for r in again[len(recs):]}, {3})
+
+
+
+class TestHybrid(unittest.TestCase):
+    """BACH + GA: active_learning.ga_fraction."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cryal_hybrid_")
+        for h in list(logging.getLogger("cryal").handlers):
+            logging.getLogger("cryal").removeHandler(h)
+            h.close()
+
+    def tearDown(self):
+        for h in list(logging.getLogger("cryal").handlers):
+            logging.getLogger("cryal").removeHandler(h)
+            h.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def load(self, body):
+        path = os.path.join(self.tmp, "cryal.toml")
+        with open(path, "w") as f:
+            f.write(f'[general]\nmolecule = "{BENZENE}"\n'
+                    f'[backend]\nengine = "ase"\n'
+                    f'[backend.ase]\ncalculator = "tests.stub_calculator.StubCalculator"\n'
+                    + body)
+        return load_config(path)
+
+    def test_slots_are_a_share_of_the_random_part(self):
+        from cryal.active_learning import ga_slots
+        self.assertEqual(ga_slots(50, True, 0.0), 0)       # BACH as published
+        self.assertEqual(ga_slots(50, True, 0.5), 12)      # of 25 random
+        self.assertEqual(ga_slots(50, False, 0.5), 25)     # GP off: all 50 random
+        self.assertEqual(ga_slots(50, True, 1.0), 25)
+        self.assertEqual(ga_slots(7, True, 1.0), 4)        # 7 - 7 // 2
+
+    def test_config(self):
+        self.assertEqual(self.load("").ga_fraction, 0.0)
+        self.assertEqual(self.load("[active_learning]\nga_fraction = 0.25\n").ga_fraction,
+                         0.25)
+        for body, says in [
+            ("[active_learning]\nga_fraction = 1.5\n", "[0, 1]"),
+            ("[active_learning]\nga_fraction = 0.5\n[ga]\noperators = { immigrant = 1 }\n",
+             "immigrants alone"),
+        ]:
+            with self.subTest(body=body):
+                with self.assertRaises(ValueError) as ctx:
+                    self.load(body)
+                self.assertIn(says, str(ctx.exception))
+        path = os.path.join(self.tmp, "ga.toml")
+        with open(path, "w") as f:
+            f.write(f'[general]\nmolecule = "{BENZENE}"\nalgorithm = "ga"\n'
+                    f'[backend]\nengine = "ase"\n'
+                    f'[backend.ase]\ncalculator = "tests.stub_calculator.StubCalculator"\n'
+                    f'[active_learning]\nga_fraction = 0.5\n')
+        with self.assertRaises(ValueError) as ctx:
+            load_config(path)
+        self.assertIn('algorithm = "bach"', str(ctx.exception))
+
+    def test_generate_structures_keeps_the_biased_half(self):
+        from cryal.structure_gen import generate_structures
+        cfg = run_config(self.tmp)
+        sugg = [{'beta': 100.0, 'volume': 180.0}] * 3
+        out = generate_structures(BENZENE, cfg, 8, suggestions=sugg, n_random=1)
+        families = [G.source_family(s['source']) for s in out]
+        self.assertEqual(families.count('random'), 1)
+        self.assertEqual(families.count('biased'), 4)
+
+    def test_bach_cycles_carry_ga_children(self):
+        from cryal.active_learning import run as bach
+        out = os.path.join(self.tmp, "hybrid")
+        bach(run_config(out, log_level="WARNING", ga_fraction=1.0,
+                        structures_per_cycle=8))
+        with open(os.path.join(out, "database.json")) as f:
+            recs = json.load(f)
+        ids = {r['id'] for r in recs}
+        self.assertFalse(any(r['source'].startswith('ga_') for r in recs if r['cycle'] == 0))
+        for cycle in (1, 2):
+            fams = [G.source_family(r['source']) for r in recs if r['cycle'] == cycle]
+            bred = [f for f in fams if f in G.GA_OPERATORS]
+            self.assertTrue(bred, fams)
+            self.assertNotIn('immigrant', bred)
+            # ga_fraction = 1: the random part is all GA, save children that
+            # could not be made and were replaced by random structures.
+            self.assertGreater(len(bred), fams.count('random'))
+        for r in recs:
+            if G.source_family(r['source']) in G.GA_OPERATORS:
+                self.assertTrue(set(r['parents']) <= ids)
+            else:
+                self.assertNotIn('parents', r)
 
 
 if __name__ == "__main__":

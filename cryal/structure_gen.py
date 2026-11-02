@@ -224,7 +224,7 @@ def _incompatible(failures: Dict[str, int]) -> bool:
 
 def generate_structures(mol_file: str, cfg: Config, n: int,
                         suggestions: Optional[List[Dict]] = None,
-                        logger=None) -> List[Dict]:
+                        logger=None, n_random: Optional[int] = None) -> List[Dict]:
     """
     Generate n crystal structures.
 
@@ -236,6 +236,11 @@ def generate_structures(mol_file: str, cfg: Config, n: int,
     In cycles > 0 (suggestions provided):
       - Half the batch is biased toward GP suggestions (beta, volume targets)
       - Half is sampled randomly for exploration
+
+    n_random, when given, replaces the size of the random part and leaves the
+    biased part as it is: n - n_random slots then go unfilled here, for the
+    caller to fill otherwise (active_learning.ga_fraction breeds them with the
+    genetic operators). Left out, the split is exactly the one above.
 
     Returns list of dicts: {'atoms': ASE Atoms, 'space_group': int, 'source': str}
     """
@@ -257,7 +262,7 @@ def generate_structures(mol_file: str, cfg: Config, n: int,
 
     # Split into biased and unbiased if suggestions are available
     n_biased   = (n // 2) if suggestions else 0
-    n_unbiased = n - n_biased
+    n_unbiased = n - n_biased if n_random is None else n_random
 
     def _attempt(sg, volume, beta_override=None, anisotropy_target=None):
         """One generation attempt with USPEX-like expansion loop."""
@@ -341,7 +346,7 @@ def generate_structures(mol_file: str, cfg: Config, n: int,
             count_biased += 1
 
     if logger:
-        logger.info(f"  Generated {len(structures)}/{n} structures "
+        logger.info(f"  Generated {len(structures)}/{n_biased + n_unbiased} structures "
                     f"({attempts} attempts, {n_biased} biased)")
         if errors:
             top_errors = sorted(errors.items(), key=lambda x: -x[1])[:3]
