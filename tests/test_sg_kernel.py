@@ -29,7 +29,8 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, Matern, WhiteKernel
 
 from cryal.sg_kernel import (OnColumns, SpaceGroupKernel, _CENTERING,
-                             bravais_lattice, crystal_family)
+                             bravais_lattice, centrosymmetric, crystal_family,
+                             point_group)
 
 
 def _column(groups):
@@ -57,6 +58,14 @@ class TestClassification(unittest.TestCase):
         self.assertEqual(len(lattices), 14)
         for sg in range(1, 231):
             self.assertEqual(bravais_lattice(sg)[0], crystal_family(sg))
+
+    def test_point_group_and_centrosymmetry_match_pyxtal(self):
+        from pyxtal.symmetry import Group
+        for sg in range(1, 231):
+            with self.subTest(sg=sg):
+                g = Group(sg)
+                self.assertEqual(point_group(sg), g.point_group)
+                self.assertEqual(centrosymmetric(sg), bool(g.inversion))
 
     def test_invalid_numbers_are_refused(self):
         for sg in (0, 231, -1, 14.0):
@@ -119,6 +128,53 @@ class TestCovariance(unittest.TestCase):
                     k(_column(bad))
 
 
+class TestCrossCuttingLevels(unittest.TestCase):
+    """Point group and centrosymmetry: off by default, PSD when on."""
+
+    GROUPS = [14, 15, 4, 9, 2, 19, 33, 61, 64]
+
+    def test_off_by_default_changes_nothing(self):
+        X = _column(self.GROUPS)
+        base = SpaceGroupKernel(w_lattice=0.3, w_family=0.7, w_any=0.1)
+        same = SpaceGroupKernel(w_lattice=0.3, w_family=0.7, w_any=0.1,
+                                w_point_group=5.0, w_centro=5.0)
+        np.testing.assert_array_equal(base(X), same(X))
+        self.assertEqual(len(base.theta), 3)
+
+    def test_shared_point_group_across_lattices(self):
+        # 14 (mP) and 15 (mS) share 2/m; 61 (oP) and 64 (oS) share mmm
+        k = SpaceGroupKernel(w_lattice=1e-5, w_family=1e-5, w_any=1e-5,
+                             use_point_group=True, w_point_group=1.0)
+        K = k(_column([14, 15, 4, 61, 64]))
+        self.assertAlmostEqual(K[0, 1], 0.5, places=4)
+        self.assertAlmostEqual(K[3, 4], 0.5, places=4)
+        self.assertAlmostEqual(K[0, 2], 0.0, places=4)    # 2/m vs 2
+
+    def test_centrosymmetry_level(self):
+        k = SpaceGroupKernel(w_lattice=1e-5, w_family=1e-5, w_any=1e-5,
+                             use_centro=True, w_centro=1.0)
+        K = k(_column([14, 61, 4, 19]))
+        self.assertAlmostEqual(K[0, 1], 0.5, places=4)    # both centrosymmetric
+        self.assertAlmostEqual(K[2, 3], 0.5, places=4)    # both not
+        self.assertAlmostEqual(K[0, 2], 0.0, places=4)
+
+    def test_psd_and_unit_diagonal_with_every_level(self):
+        rng = np.random.default_rng(5)
+        for _ in range(100):
+            w = np.exp(rng.uniform(np.log(1e-5), np.log(1e5), 5))
+            k = SpaceGroupKernel(w_lattice=w[0], w_family=w[1], w_any=w[2],
+                                 use_point_group=True, w_point_group=w[3],
+                                 use_centro=True, w_centro=w[4])
+            K = k(_column(rng.integers(1, 231, size=60)))
+            np.testing.assert_allclose(np.diag(K), 1.0)
+            self.assertGreaterEqual(np.linalg.eigvalsh(K).min(), -1e-10)
+            self.assertAlmostEqual(sum(k.variance_shares().values()), 1.0)
+
+    def test_correlations_refuse_a_chain_that_is_not_one(self):
+        with self.assertRaises(ValueError):
+            SpaceGroupKernel(use_centro=True).correlations()
+
+
 class TestGradient(unittest.TestCase):
 
     def _numeric(self, kernel, X, eps=1e-6):
@@ -141,6 +197,15 @@ class TestGradient(unittest.TestCase):
         k = SpaceGroupKernel(w_lattice=0.4, w_family=1.7, w_any=0.05)
         K, grad = k(X, eval_gradient=True)
         np.testing.assert_allclose(K, k(X))
+        np.testing.assert_allclose(grad, self._numeric(k, X), atol=1e-8)
+
+    def test_gradient_with_every_level(self):
+        X = _column([14, 4, 15, 61, 19, 2, 14, 167, 64, 9])
+        k = SpaceGroupKernel(w_lattice=0.4, w_family=1.7, w_any=0.05,
+                             use_point_group=True, w_point_group=0.8,
+                             use_centro=True, w_centro=0.3)
+        self.assertEqual(len(k.theta), 5)
+        _, grad = k(X, eval_gradient=True)
         np.testing.assert_allclose(grad, self._numeric(k, X), atol=1e-8)
 
     def test_fixed_weights_drop_out_of_the_gradient(self):

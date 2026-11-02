@@ -32,6 +32,12 @@ system level is absent for that reason: hP spans the trigonal and hexagonal
 systems, so lattice and system do not nest, and with both the correlations
 would no longer form one ordered chain.
 
+Two further levels are optional and off by default: sharing the crystal
+class (point group: P2_1/c and C2/c are both 2/m, in different lattices)
+and sharing centrosymmetry. They cut across the chain, so they keep the
+kernel PSD but not ordered, and are there to be tested against data
+before either is used in a run.
+
 Why hierarchical. A run may draw from every group valid for its Z, thirty to
 a hundred of them, with a handful of structures each and none in some. With
 one correlation for every pair of distinct groups, a group without data is
@@ -83,6 +89,8 @@ the cell columns, so the two multiply cleanly:
         * SpaceGroupKernel(column=sg_column) + WhiteKernel()
 """
 
+import bisect
+
 import numpy as np
 from sklearn.gaussian_process.kernels import Hyperparameter, Kernel
 
@@ -125,6 +133,33 @@ def bravais_lattice(sg: int) -> str:
     return family + ("S" if letter in "ABC" else letter)
 
 
+# The 32 crystal classes (point groups) occupy contiguous runs of space-group
+# numbers; this is the first group of each class, 1-32 in order (checked
+# against PyXtal by the tests). Names follow PyXtal.
+_POINT_GROUP_START = (1, 2, 3, 6, 10, 16, 25, 47, 75, 81, 83, 89, 99, 111, 123,
+                      143, 147, 149, 156, 162, 168, 174, 175, 177, 183, 187,
+                      191, 195, 200, 207, 215, 221)
+_POINT_GROUP_NAME = ("1", "-1", "2", "m", "2/m", "222", "mm2", "mmm", "4", "-4",
+                     "4/m", "422", "4mm", "-42m", "4/mmm", "3", "-3", "32", "3m",
+                     "-3m", "6", "-6", "6/m", "622", "6mm", "-62m", "6/mmm",
+                     "23", "m-3", "432", "-43m", "m-3m")
+# A group is centrosymmetric when its point group holds the inversion: the
+# 11 Laue classes.
+_LAUE_CLASSES = {"-1", "2/m", "mmm", "4/m", "4/mmm", "-3", "-3m", "6/m",
+                 "6/mmm", "m-3", "m-3m"}
+
+
+def point_group(sg: int) -> str:
+    """Crystal class (point group) of a space group, e.g. '2/m', 'mmm'."""
+    _check_group(sg)
+    return _POINT_GROUP_NAME[bisect.bisect_right(_POINT_GROUP_START, sg) - 1]
+
+
+def centrosymmetric(sg: int) -> bool:
+    """True if the space group contains the inversion."""
+    return point_group(sg) in _LAUE_CLASSES
+
+
 def _check_group(sg) -> None:
     if not (isinstance(sg, (int, np.integer)) and 1 <= sg <= 230):
         raise ValueError(f"{sg!r} is not a space group: valid numbers are 1-230")
@@ -134,12 +169,20 @@ def _check_group(sg) -> None:
 # be turned into lattice and family codes with one fancy-indexing step.
 _FAMILY_CODE  = np.zeros(231, dtype=int)
 _LATTICE_CODE = np.zeros(231, dtype=int)
+_PG_CODE      = np.zeros(231, dtype=int)
+_CENTRO_CODE  = np.zeros(231, dtype=int)
 _lattices = {}
 for _sg in range(1, 231):
     _FAMILY_CODE[_sg] = "amothc".index(crystal_family(_sg))
     _LATTICE_CODE[_sg] = _lattices.setdefault(bravais_lattice(_sg), len(_lattices))
+    _PG_CODE[_sg] = _POINT_GROUP_NAME.index(point_group(_sg))
+    _CENTRO_CODE[_sg] = int(centrosymmetric(_sg))
 assert len(_lattices) == 14
 del _sg, _lattices
+
+# What two groups share, as a code per group: equal codes, shared level.
+_LEVEL_CODES = {"lattice": _LATTICE_CODE, "family": _FAMILY_CODE,
+                "point_group": _PG_CODE, "centro": _CENTRO_CODE}
 
 
 def _groups(X, column: int) -> np.ndarray:
@@ -170,13 +213,27 @@ class SpaceGroupKernel(Kernel):
     w_lattice, w_family, w_any : float > 0
         Weights of the shared-lattice, shared-family and baseline levels,
         relative to the fixed weight 1 of "same group".
+    use_point_group, use_centro : bool
+        Add a level for sharing the crystal class (point group), and one for
+        sharing centrosymmetry (both centrosymmetric, or both not). Off by
+        default. These cut across the lattice/family chain -- P2_1/c and
+        C2/c share 2/m in different lattices -- so with either on the
+        kernel stays PSD but its correlations no longer form one ordered
+        chain; read it by variance_shares().
+    w_point_group, w_centro : float > 0
+        Their weights, used only when the level is on.
     *_bounds : pair of floats, or "fixed"
         Bounds on each weight for the hyperparameter optimiser.
     """
 
+    _LEVELS = ("lattice", "family", "point_group", "centro", "any")
+
     def __init__(self, column=0, w_lattice=1.0, w_family=1.0, w_any=1.0,
                  w_lattice_bounds=(1e-5, 1e5), w_family_bounds=(1e-5, 1e5),
-                 w_any_bounds=(1e-5, 1e5)):
+                 w_any_bounds=(1e-5, 1e5),
+                 use_point_group=False, w_point_group=1.0,
+                 w_point_group_bounds=(1e-5, 1e5),
+                 use_centro=False, w_centro=1.0, w_centro_bounds=(1e-5, 1e5)):
         self.column = column
         self.w_lattice = w_lattice
         self.w_family = w_family
@@ -184,6 +241,12 @@ class SpaceGroupKernel(Kernel):
         self.w_lattice_bounds = w_lattice_bounds
         self.w_family_bounds = w_family_bounds
         self.w_any_bounds = w_any_bounds
+        self.use_point_group = use_point_group
+        self.w_point_group = w_point_group
+        self.w_point_group_bounds = w_point_group_bounds
+        self.use_centro = use_centro
+        self.w_centro = w_centro
+        self.w_centro_bounds = w_centro_bounds
 
     @property
     def hyperparameter_w_lattice(self):
@@ -197,8 +260,34 @@ class SpaceGroupKernel(Kernel):
     def hyperparameter_w_any(self):
         return Hyperparameter("w_any", "numeric", self.w_any_bounds)
 
+    # A level that is off is a fixed hyperparameter: out of theta and of the
+    # gradient, and (in _weights) out of the kernel.
+    @property
+    def hyperparameter_w_point_group(self):
+        return Hyperparameter("w_point_group", "numeric",
+                              self.w_point_group_bounds if self.use_point_group else "fixed")
+
+    @property
+    def hyperparameter_w_centro(self):
+        return Hyperparameter("w_centro", "numeric",
+                              self.w_centro_bounds if self.use_centro else "fixed")
+
+    def _weights(self) -> dict:
+        """Weight of every level in use, "same group" (fixed at 1) excluded."""
+        on = {"point_group": self.use_point_group, "centro": self.use_centro}
+        return {level: getattr(self, f"w_{level}") for level in self._LEVELS
+                if on.get(level, True)}
+
     def correlations(self) -> dict:
-        """The correlation between two groups at each level of sharing."""
+        """
+        The correlation between two groups at each level of sharing. Defined
+        only while the levels form one chain (point group and centrosymmetry
+        off); otherwise use variance_shares().
+        """
+        if self.use_point_group or self.use_centro:
+            raise ValueError("with point-group or centrosymmetry levels the "
+                             "correlations do not form one chain; use "
+                             "variance_shares()")
         S = 1.0 + self.w_lattice + self.w_family + self.w_any
         return {"same group": 1.0,
                 "same lattice": (self.w_lattice + self.w_family + self.w_any) / S,
@@ -207,12 +296,15 @@ class SpaceGroupKernel(Kernel):
 
     def variance_shares(self) -> dict:
         """
-        Fraction of the variance that belongs to each level: particular to a
-        group, shared within a lattice, within a family, or by all groups.
+        Fraction of the variance that belongs to each level in use: particular
+        to a group, shared within a lattice, a family, a point group, a
+        centrosymmetry class, or by all groups.
         """
-        S = 1.0 + self.w_lattice + self.w_family + self.w_any
-        return {"group": 1.0 / S, "lattice": self.w_lattice / S,
-                "family": self.w_family / S, "all groups": self.w_any / S}
+        weights = self._weights()
+        S = 1.0 + sum(weights.values())
+        names = {"any": "all groups", "centro": "centrosymmetry"}
+        return {"group": 1.0 / S,
+                **{names.get(level, level): w / S for level, w in weights.items()}}
 
     def __call__(self, X, Y=None, eval_gradient=False):
         """Return k(X, Y) and, optionally, its gradient in log-hyperparameters."""
@@ -224,13 +316,13 @@ class SpaceGroupKernel(Kernel):
         else:
             g2 = _groups(Y, self.column)
 
-        same = {
-            "group":   (g1[:, None] == g2[None, :]).astype(float),
-            "lattice": (_LATTICE_CODE[g1][:, None] == _LATTICE_CODE[g2][None, :]).astype(float),
-            "family":  (_FAMILY_CODE[g1][:, None] == _FAMILY_CODE[g2][None, :]).astype(float),
-            "any":     np.ones((len(g1), len(g2))),
-        }
-        weights = {"lattice": self.w_lattice, "family": self.w_family, "any": self.w_any}
+        weights = self._weights()
+        same = {"group": (g1[:, None] == g2[None, :]).astype(float),
+                "any": np.ones((len(g1), len(g2)))}
+        for level in weights:
+            if level != "any":
+                code = _LEVEL_CODES[level]
+                same[level] = (code[g1][:, None] == code[g2][None, :]).astype(float)
         S = 1.0 + sum(weights.values())
         K = (same["group"] + sum(w * same[level] for level, w in weights.items())) / S
 
@@ -257,11 +349,8 @@ class SpaceGroupKernel(Kernel):
         return True
 
     def __repr__(self):
-        rho = self.correlations()
-        return (f"SpaceGroupKernel(column={self.column}, "
-                f"rho_lattice={rho['same lattice']:.3g}, "
-                f"rho_family={rho['same family']:.3g}, "
-                f"rho_any={rho['nothing shared']:.3g})")
+        shares = ", ".join(f"{k}={v:.3g}" for k, v in self.variance_shares().items())
+        return f"SpaceGroupKernel(column={self.column}, shares: {shares})"
 
 
 class OnColumns(Kernel):
