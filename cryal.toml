@@ -23,6 +23,8 @@ random_seed = 33936
 output_dir  = "AL_results"            # all output goes here
 log_level   = "INFO"                  # "INFO" or "DEBUG"
 resume      = false                   # true (or pass --resume) = continue an interrupted run in output_dir
+algorithm   = "bach"                  # the search: "bach" (GP + Expected Improvement, the
+                                      # published method) or "ga" (genetic algorithm, see [ga])
 
 [backend]
 # Which engine relaxes each candidate and returns its energy.
@@ -146,6 +148,33 @@ n_restarts     = 5                    # optimizer restarts for kernel hyperparam
 ei_xi          = 0.01                 # exploration parameter (higher = more exploration)
 ei_candidates  = 50000                # random candidates evaluated for EI maximization
 ei_suggestions = 20                   # top EI candidates used to bias next generation
+
+[ga]
+# Only read when general.algorithm = "ga". The budget is [active_learning]'s:
+# cycles = generations, initial_structures = generation 0 (generated exactly as
+# BACH's cycle 0), structures_per_cycle = children per generation,
+# max_no_improve_cycles = the stopping rule. A GA run and a BACH run from one
+# file therefore spend the same evaluations.
+#
+# The population is the population_size lowest-energy distinct structures in
+# the database; two are the same when energy per molecule AND density agree
+# within duplicate_energy and duplicate_density. Children are P1 crystals of
+# rigid molecules, relaxed by the backend like any other candidate.
+population_size   = 20
+tournament_size   = 3                 # parents: best of this many drawn at random
+# Share of each generation per operator (weights; an operator left out is 0):
+#   crossover    cut-and-splice of two parents along a random plane
+#   strain       random symmetric deformation of the cell, at constant volume
+#   rotation     some molecules turn about their centres
+#   translation  some molecules move
+#   immigrant    a fresh random structure from the generator (diversity)
+operators         = { crossover = 0.5, strain = 0.1, rotation = 0.1, translation = 0.1, immigrant = 0.2 }
+strain_sigma      = 0.10              # std of each strain-tensor component
+max_rotation      = 45.0              # degrees
+max_translation   = 1.0               # Å
+fraction_mutated  = 0.5               # of the molecules, for rotation and translation
+duplicate_energy  = 0.002             # eV per molecule
+duplicate_density = 0.005             # g/cm³
 
 [chpi]
 # CH-pi geometric optimizer: adjusts molecular positions to maximize

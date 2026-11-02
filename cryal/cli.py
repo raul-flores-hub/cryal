@@ -122,9 +122,12 @@ def main(argv=None):
     random.seed(cfg.random_seed)
     np.random.seed(cfg.random_seed)
 
-    # Run active learning
+    # Run the search general.algorithm names: BACH unless it says otherwise.
     try:
-        from .active_learning import run
+        if cfg.algorithm == "ga":
+            from .genetic import run
+        else:
+            from .active_learning import run
         run(cfg)
     except KeyboardInterrupt:
         print("\nRun interrupted by user.")

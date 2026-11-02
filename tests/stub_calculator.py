@@ -54,3 +54,31 @@ class StubCalculator(Calculator):
 def make_stub(**kwargs):
     """Factory form of the same calculator (backends accept either)."""
     return StubCalculator(**kwargs)
+
+
+class VolumeStub(Calculator):
+    """Energy that falls with density, zero forces and stress.
+
+    The optimizer converges at once, so a relaxation returns the structure it
+    was given, but structures now differ in energy: denser is lower. That is
+    enough of a landscape for a search to have something to find, which a
+    constant energy is not.
+    """
+
+    implemented_properties = ["energy", "free_energy", "forces", "stress"]
+
+    def __init__(self, energy=-1000.0, per_A3=0.01, **kwargs):
+        super().__init__(**kwargs)
+        self.e0 = float(energy)
+        self.per_A3 = float(per_A3)
+
+    def calculate(self, atoms=None, properties=("energy",),
+                  system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        e = self.e0 + self.per_A3 * self.atoms.get_volume()
+        self.results = {
+            "energy": e,
+            "free_energy": e,
+            "forces": np.zeros((len(self.atoms), 3)),
+            "stress": np.zeros(6),
+        }

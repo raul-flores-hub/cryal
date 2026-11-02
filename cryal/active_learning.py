@@ -229,6 +229,10 @@ def _record_result(s, relaxed, energy, cfg, cycle: int, step_name: str,
         'gamma':        round(cp['gamma'], 3),
         'cif_path':     cif_path,
     }
+    # Which records a genetic-algorithm child was bred from (cryal/genetic.py).
+    # BACH candidates carry no such key, and their records are unchanged.
+    if 'parents' in s:
+        record['parents'] = list(s['parents'])
     db.add(record)
     db.save()
 

@@ -47,6 +47,11 @@ class Config:
     output_dir:          str   = "AL_results"
     log_level:           str   = "INFO"
     resume:              bool  = False   # continue from an existing output_dir
+    # The search that proposes candidates. "bach" is the GP + Expected
+    # Improvement loop of the article and the default, so every input written
+    # before alternatives existed keeps its meaning; "ga" is the genetic
+    # algorithm in cryal/genetic.py.
+    algorithm:           str   = "bach"
 
     # --- ENERGY BACKEND ---
     # Which engine relaxes a candidate and returns its energy. The default is
@@ -132,6 +137,22 @@ class Config:
     ei_xi:               float = 0.01
     num_ei_candidates:   int   = 50000
     num_ei_suggestions:  int   = 20
+
+    # --- GENETIC ALGORITHM (algorithm = "ga") ---
+    # Read only by cryal/genetic.py. The budget is not here: a GA run spends
+    # [active_learning] cycles / initial_structures / structures_per_cycle /
+    # max_no_improve_cycles exactly as BACH does, so the two searches run from
+    # one file evaluate the same number of candidates.
+    ga_population_size:  int   = 20      # distinct structures eligible as parents
+    ga_tournament_size:  int   = 3
+    ga_operators:        Dict[str, float] = field(default_factory=lambda: dict(
+        crossover=0.5, strain=0.1, rotation=0.1, translation=0.1, immigrant=0.2))
+    ga_strain_sigma:     float = 0.10    # std of each strain-tensor component
+    ga_max_rotation:     float = 45.0    # degrees
+    ga_max_translation:  float = 1.0     # Å
+    ga_fraction_mutated: float = 0.5     # of the molecules, in rotation/translation
+    ga_duplicate_energy: float = 0.002   # eV per molecule
+    ga_duplicate_density: float = 0.005  # g/cm³
 
     # --- CHPI OPTIMIZER ---
     use_chpi_optimizer:  bool  = True
@@ -293,6 +314,48 @@ def _sg_weights(path, v):
     return groups, weights
 
 
+def _positive_int(path, v):
+    v = _int(path, v)
+    if v < 1:
+        raise ValueError(f"{path}: must be at least 1, got {v}")
+    return v
+
+
+def _nonneg(path, v):
+    v = _float(path, v)
+    if v < 0:
+        raise ValueError(f"{path}: must not be negative, got {v}")
+    return v
+
+
+def _fraction(path, v):
+    v = _float(path, v)
+    if not 0.0 < v <= 1.0:
+        raise ValueError(f"{path}: must be in (0, 1], got {v}")
+    return v
+
+
+#: The variation operators of cryal/genetic.py, in the order it reports them.
+GA_OPERATORS = ("crossover", "strain", "rotation", "translation", "immigrant")
+
+
+def _ga_operators(path, v):
+    """{ crossover = 0.5, ... } -> a weight for every operator; one left out is 0."""
+    if not isinstance(v, dict) or not v:
+        _fail(path, v, "a table { operator = weight, ... }")
+    out = dict.fromkeys(GA_OPERATORS, 0.0)
+    for k, w in v.items():
+        if k not in GA_OPERATORS:
+            close = difflib.get_close_matches(k, GA_OPERATORS, n=1)
+            hint = f"; did you mean '{close[0]}'?" if close else \
+                   f"; the operators are {', '.join(GA_OPERATORS)}"
+            raise ValueError(f"{path}.{k}: unknown operator{hint}")
+        out[k] = _nonneg(f"{path}.{k}", w)
+    if sum(out.values()) <= 0:
+        raise ValueError(f"{path}: at least one operator needs a positive weight")
+    return out
+
+
 _LIST_STR   = _list_of(_str, "strings")
 _LIST_FLOAT = _list_of(_float, "numbers")
 
@@ -305,6 +368,7 @@ _SCHEMA = {
         "output_dir":           ("output_dir", _str),
         "log_level":            ("log_level", _log_level),
         "resume":               ("resume", _bool),
+        "algorithm":            ("algorithm", _choice("bach", "ga")),
     },
     "backend": {
         "engine":               ("energy_backend", _str),
@@ -364,6 +428,17 @@ _SCHEMA = {
         "ei_xi":                ("ei_xi", _float),
         "ei_candidates":        ("num_ei_candidates", _int),
         "ei_suggestions":       ("num_ei_suggestions", _int),
+    },
+    "ga": {
+        "population_size":      ("ga_population_size", _positive_int),
+        "tournament_size":      ("ga_tournament_size", _positive_int),
+        "operators":            ("ga_operators", _ga_operators),
+        "strain_sigma":         ("ga_strain_sigma", _nonneg),
+        "max_rotation":         ("ga_max_rotation", _nonneg),
+        "max_translation":      ("ga_max_translation", _nonneg),
+        "fraction_mutated":     ("ga_fraction_mutated", _fraction),
+        "duplicate_energy":     ("ga_duplicate_energy", _nonneg),
+        "duplicate_density":    ("ga_duplicate_density", _nonneg),
     },
     "chpi": {
         "enabled":              ("use_chpi_optimizer", _bool),
@@ -584,6 +659,15 @@ def print_config_summary(cfg: Config, logger=None):
         "",
         f"  GP surrogate:    {'ON' if cfg.use_gp else 'OFF — no EI bias (ablation control)'}"
         + (" + anisotropy feature" if cfg.use_gp and cfg.gp_anisotropy else ""),
+    ]
+    if cfg.algorithm == "ga":
+        # Said in place of the GP line, which a GA run does not read. A BACH
+        # run prints exactly the summary it printed before the GA existed.
+        ops = ", ".join(f"{k} {w:g}" for k, w in cfg.ga_operators.items() if w > 0)
+        lines[-1] = (f"  Search:          genetic algorithm — population "
+                     f"{cfg.ga_population_size}, tournament {cfg.ga_tournament_size}")
+        lines.append(f"  GA operators:    {ops}")
+    lines += [
         f"  CH-pi optimizer: {'ON' if cfg.use_chpi_optimizer else 'OFF'}",
         f"  Seeds folder:    {'ON — ' + cfg.seeds_folder if cfg.use_seeds_folder else 'OFF'}",
         f"  Integrity check: {'ON' if cfg.check_molecular_integrity else 'OFF'}",

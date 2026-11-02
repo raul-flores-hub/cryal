@@ -154,6 +154,7 @@ starts from PyXtal alone.
 | `cryal/sg_kernel.py` | hierarchical space-group kernel (group, Bravais lattice, crystal family; optional point group and centrosymmetry); not yet used by the GP |
 | `tools/sg_kernel_cv.py` | cross-validation on finished runs that chooses the space-group kernel, by a protocol fixed in its docstring |
 | `cryal/active_learning.py` | the active-learning loop |
+| `cryal/genetic.py` | the genetic algorithm, an alternative search (`general.algorithm = "ga"`) |
 | `cryal/backends/uma.py` | UMA as a named backend, with its mandatory task |
 | `cryal/parallel.py` | distributing a cycle's candidates over several machines |
 | `cryal/_remote_worker.py` | what runs on a worker: one candidate, one verdict |
@@ -185,6 +186,42 @@ starts from PyXtal alone.
   that it is not a pure random search — the pool of perturbed incumbents is
   independent of the GP and remains active. Omitting the key leaves the surrogate
   on, so inputs written before this option behave exactly as before.
+
+## Alternative search: a genetic algorithm
+
+`general.algorithm = "ga"` replaces the GP and Expected Improvement with a
+genetic algorithm, and changes nothing else: the same generator, backend,
+relaxation, integrity check, parallel pool, database, stopping rule and
+resume. Generation 0 is generated exactly as BACH's cycle 0 is, and
+`[active_learning]` sets the budget of both, so the two are comparable from
+one input file with one key changed. (Not structure for structure, though:
+PyXtal places molecules with its own generator, seeded from the operating
+system rather than from `random_seed`, so no two runs — two BACH runs
+included — are guaranteed the same structures.)
+
+```toml
+[general]
+algorithm = "ga"
+
+[ga]
+population_size = 20
+operators = { crossover = 0.5, strain = 0.1, rotation = 0.1, translation = 0.1, immigrant = 0.2 }
+```
+
+A crystal is a cell and Z rigid molecules, kept in the conformation they
+relaxed to. Each generation breeds `structures_per_cycle` children by
+tournament selection from the `population_size` lowest-energy *distinct*
+structures in the database (equal energy per molecule and density count once),
+in fixed proportions: cut-and-splice crossover, cell strain, molecular
+rotation, molecular translation, and fresh random immigrants. Children are
+written in P1, overlapping molecules are pushed apart as rigid bodies, and a
+child that still clashes is expanded by `volume.expansion_factors`, as the
+generator does. Every record a child produces says which operator made it
+(`source = "ga_crossover"`, …) and which records it was bred from (`parents`),
+and `final_report.json` tallies what each operator contributed.
+
+Since the population is read from the database, a resumed GA run continues
+exactly where an uninterrupted one would have been.
 
 ## Energy backends
 
