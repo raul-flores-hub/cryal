@@ -28,6 +28,7 @@ import tempfile
 import unittest
 
 from cryal import basin_hopping as BH
+from cryal import genetic as G
 from cryal import search as S
 from cryal.config import load_config
 from tests.test_genetic import BENZENE, run_config
@@ -147,7 +148,7 @@ class TestBasinHopping(SearchCase):
 
     def check_walks(self, recs, cfg):
         """Every trial starts where its walker was; at most one move per cycle."""
-        start = {w: r['id'] for w, r in enumerate(BH.starting_points(recs, cfg))}
+        start = {w: r['id'] for w, r in enumerate(BH.starting_points(recs, cfg, G.Molecule.from_file(BENZENE)))}
         by_id = {r['id']: r for r in recs}
         here = dict(start)
         for cycle in sorted({r['cycle'] for r in recs if r['cycle'] > 0}):
@@ -175,7 +176,7 @@ class TestBasinHopping(SearchCase):
         # One walker per distinct starting structure, up to the 3 asked for.
         # (The stub's energy depends on volume alone, so two of cycle 0's
         # structures can count as one, and leave fewer than 3.)
-        n_start = len(BH.starting_points(recs, cfg))
+        n_start = len(BH.starting_points(recs, cfg, G.Molecule.from_file(BENZENE)))
         self.assertTrue(1 <= n_start <= 3)
         self.assertEqual({r['walker'] for r in hops}, set(range(n_start)))
         self.check_walks(recs, cfg)

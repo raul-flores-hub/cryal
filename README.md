@@ -152,10 +152,12 @@ starts from PyXtal alone.
 | `cryal/lammps_runner.py` | compatibility shim for the pre-backends API |
 | `cryal/gp_model.py` | GP surrogate and Expected-Improvement acquisition |
 | `cryal/sg_kernel.py` | hierarchical space-group kernel (group, Bravais lattice, crystal family; optional point group and centrosymmetry); not yet used by the GP |
+| `tools/distinct_minima.py` | how many distinct minima a finished run found, and the fingerprint threshold |
 | `tools/sg_kernel_cv.py` | cross-validation on finished runs that chooses the space-group kernel, by a protocol fixed in its docstring |
 | `cryal/active_learning.py` | the active-learning loop |
 | `cryal/search.py` | the loop shared by the searches other than BACH; pure random search |
 | `cryal/basin_hopping.py` | basin hopping (`general.algorithm = "basin_hopping"`) |
+| `cryal/fingerprint.py` | structural fingerprint that tells two minima apart (`[duplicates]`) |
 | `cryal/genetic.py` | the genetic algorithm (`general.algorithm = "ga"`), also used by BACH + GA |
 | `cryal/backends/uma.py` | UMA as a named backend, with its mandatory task |
 | `cryal/parallel.py` | distributing a cycle's candidates over several machines |
@@ -288,6 +290,37 @@ temperature = 0.01        # kT in eV per molecule, about 1 kJ/mol; 0 = downhill 
 Each trial's record names its `walker`, the minimum it was made from
 (`parents`) and whether the walker moved there (`accepted`), so a walk can be
 followed in the database and a resumed run picks every walker up where it was.
+
+### Telling structures apart
+
+Two relaxed structures with the same energy per molecule and density are
+usually the same minimum, but not always. Wherever a search needs distinct
+structures — the GA's population, BACH + GA's, basin hopping's starting
+points — `[duplicates]` decides: energies per molecule within `energy` and
+packings within `fingerprint`, the Oganov–Valle cosine distance over
+*intermolecular* distances (`cryal/fingerprint.py`; distances within a
+molecule are nearly the same in every polymorph and would drown the packing
+out). It does not see the cell's setting, origin or orientation, a supercell,
+or molecules cut by the cell's faces.
+
+```toml
+[duplicates]
+energy      = 0.002     # eV per molecule
+fingerprint = 0.02      # 0 compares densities instead
+```
+
+On benzene, one crystal reached twice (0.01 Å of noise, 0.2 % on the cell)
+gave D ≤ 0.007, and crystals differing only in how the molecules are turned
+D ≥ 0.032; the default sits between. `tools/distinct_minima.py` counts the
+distinct minima a finished run found within a window of its best — the
+measure of how much of the landscape a search saw, next to how deep it went —
+and with `--calibrate` shows the distances on your own run to place the
+threshold:
+
+```bash
+python tools/distinct_minima.py runBACH/ runGA/ runRandom/ --window 5   # kJ/mol per molecule
+python tools/distinct_minima.py runBACH/ --calibrate
+```
 
 ## Energy backends
 

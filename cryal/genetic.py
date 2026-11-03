@@ -78,10 +78,11 @@ Selection
 The population is not carried in memory: at each generation it is the
 `population_size` lowest-energy distinct structures in the database, over
 everything evaluated so far (elitist, and steady-state across generations).
-Two structures count as the same when both their energies per molecule and
-their densities agree within `duplicate_energy` and `duplicate_density`; a
-coarse test, but it keeps one deep minimum, found twenty times, from
-becoming twenty parents. Parents are drawn by tournament. Because the
+Two structures count as the same when their energies per molecule agree
+within duplicates.energy and their packings within duplicates.fingerprint
+(cryal/fingerprint.py), which keeps one deep minimum, found twenty times,
+from becoming twenty parents, and two polymorphs that happen to share an
+energy and a density from becoming one. Parents are drawn by tournament. Because the
 population is a function of the database alone, a resumed run continues
 from exactly where an uninterrupted one would have been.
 """
@@ -587,18 +588,58 @@ def realize(child: Genome, mol: Molecule, cfg: Config) -> Tuple[Optional[Atoms],
 # Population and selection
 # ---------------------------------------------------------------------------
 
-def distinct_lowest(records: List[Dict], size: int, Z: int,
-                    e_tol: float, rho_tol: float) -> List[Dict]:
+_FINGERPRINTS: Dict[str, object] = {}
+
+
+def record_fingerprint(record: Dict, mol: "Molecule"):
+    """A record's fingerprint, from its CIF, computed once; None if unreadable."""
+    from .fingerprint import fingerprint
+    path = record.get('cif_path')
+    if path not in _FINGERPRINTS:
+        if len(_FINGERPRINTS) > 20000:
+            _FINGERPRINTS.clear()
+        try:
+            _FINGERPRINTS[path] = fingerprint(read(path), mol)
+        except Exception:
+            _FINGERPRINTS[path] = None
+    return _FINGERPRINTS[path]
+
+
+def same_structure(a: Dict, b: Dict, cfg: Config, mol: Optional["Molecule"] = None) -> bool:
+    """
+    The [duplicates] rule: energies per molecule within duplicates.energy,
+    and fingerprints within duplicates.fingerprint — or, with that set to 0,
+    with no molecule to make fingerprints from, or for a structure whose CIF
+    cannot be read, densities within duplicates.density.
+    """
+    if abs(a['energy'] - b['energy']) > cfg.dup_energy * cfg.Z:
+        return False
+    if cfg.dup_fingerprint > 0 and mol is not None:
+        from .fingerprint import distance
+        fa, fb = record_fingerprint(a, mol), record_fingerprint(b, mol)
+        if fa is not None and fb is not None:
+            return distance(fa, fb) <= cfg.dup_fingerprint
+    return abs(a['density'] - b['density']) <= cfg.dup_density
+
+
+def duplicate_settings(cfg: Config) -> Dict:
+    """The [duplicates] rule as final_report.json records it."""
+    return {'energy': cfg.dup_energy, 'fingerprint': cfg.dup_fingerprint,
+            'density': cfg.dup_density if cfg.dup_fingerprint == 0 else None}
+
+
+def distinct_lowest(records: List[Dict], size: int, cfg: Config,
+                    mol: Optional["Molecule"] = None) -> List[Dict]:
     """
     The `size` lowest-energy records, no two of them the same structure by
-    energy per molecule (e_tol, eV) and density (rho_tol, g/cm³).
+    the [duplicates] rule (same_structure). Fingerprints are computed only
+    for records whose energy is already close to one kept.
     """
     kept: List[Dict] = []
     for r in sorted(records, key=lambda r: r['energy']):
         if len(kept) >= size:
             break
-        if any(abs(r['energy'] - k['energy']) <= e_tol * Z and
-               abs(r['density'] - k['density']) <= rho_tol for k in kept):
+        if any(same_structure(r, k, cfg, mol) for k in kept):
             continue
         kept.append(r)
     return kept
@@ -738,8 +779,7 @@ def bach_children(records: List[Dict], n: int, mol: Molecule, cfg: Config,
     or there is nothing to breed from; the caller fills the gap.
     """
     weights = {k: (cfg.ga_operators[k] if k in GA_BREEDING else 0.0) for k in GA_OPERATORS}
-    population = distinct_lowest(records, cfg.ga_population_size, cfg.Z,
-                                 cfg.ga_duplicate_energy, cfg.ga_duplicate_density)
+    population = distinct_lowest(records, cfg.ga_population_size, cfg, mol)
     genomes = load_parents(population, mol, logger)
     if not genomes:
         return []
@@ -764,8 +804,7 @@ class GeneticSearch(Strategy):
 
     def propose(self, ctx, cycle):
         cfg = ctx.cfg
-        population = distinct_lowest(ctx.db.records, cfg.ga_population_size, cfg.Z,
-                                     cfg.ga_duplicate_energy, cfg.ga_duplicate_density)
+        population = distinct_lowest(ctx.db.records, cfg.ga_population_size, cfg, ctx.mol)
         genomes = load_parents(population, ctx.mol, ctx.logger)
         if population:
             ctx.logger.info(f"Population: {len(genomes)} distinct parents, "
@@ -783,8 +822,7 @@ class GeneticSearch(Strategy):
             'max_rotation':      cfg.ga_max_rotation,
             'max_translation':   cfg.ga_max_translation,
             'fraction_mutated':  cfg.ga_fraction_mutated,
-            'duplicate_energy':  cfg.ga_duplicate_energy,
-            'duplicate_density': cfg.ga_duplicate_density,
+            'duplicates':        duplicate_settings(cfg),
         }
 
 

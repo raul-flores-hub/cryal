@@ -168,8 +168,7 @@ ei_suggestions = 20                   # top EI candidates used to bias next gene
 # file therefore spend the same evaluations.
 #
 # The population is the population_size lowest-energy distinct structures in
-# the database; two are the same when energy per molecule AND density agree
-# within duplicate_energy and duplicate_density. Children are P1 crystals of
+# the database, by the rule of [duplicates]. Children are P1 crystals of
 # rigid molecules, relaxed by the backend like any other candidate.
 population_size   = 20
 tournament_size   = 3                 # parents: best of this many drawn at random
@@ -184,8 +183,20 @@ strain_sigma      = 0.10              # std of each strain-tensor component
 max_rotation      = 45.0              # degrees
 max_translation   = 1.0               # Å
 fraction_mutated  = 0.5               # of the molecules, for rotation and translation
-duplicate_energy  = 0.002             # eV per molecule
-duplicate_density = 0.005             # g/cm³
+
+[duplicates]
+# When two relaxed structures are the same minimum, wherever a search needs
+# distinct ones (the GA's and BACH + GA's population, basin hopping's start):
+# energies per molecule within `energy` AND packings within `fingerprint`, the
+# Oganov-Valle cosine distance over intermolecular distances (0 = identical,
+# 1 at most; cryal/fingerprint.py). On benzene, the same crystal rattled by
+# 0.01 Å and strained 0.2 % -- one minimum reached twice -- gave D <= 0.007;
+# crystals that differ only in how the molecules are turned, D >= 0.032.
+# Calibrate it on your own run with tools/distinct_minima.py --calibrate.
+# fingerprint = 0 compares densities instead (within `density`).
+energy      = 0.002                   # eV per molecule
+fingerprint = 0.02
+density     = 0.005                   # g/cm³, only when fingerprint = 0
 
 [basin_hopping]
 # Only read when general.algorithm = "basin_hopping"; the budget is

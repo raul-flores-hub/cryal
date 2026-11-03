@@ -155,8 +155,16 @@ class Config:
     ga_max_rotation:     float = 45.0    # degrees
     ga_max_translation:  float = 1.0     # Å
     ga_fraction_mutated: float = 0.5     # of the molecules, in rotation/translation
-    ga_duplicate_energy: float = 0.002   # eV per molecule
-    ga_duplicate_density: float = 0.005  # g/cm³
+
+    # --- DUPLICATES ---
+    # When two relaxed structures are the same minimum: energies per molecule
+    # within dup_energy, and fingerprints within dup_fingerprint (cosine
+    # distance, cryal/fingerprint.py) -- or, with dup_fingerprint = 0,
+    # densities within dup_density. Used wherever a search needs distinct
+    # structures: the GA's population, BACH + GA's, basin hopping's start.
+    dup_energy:          float = 0.002   # eV per molecule
+    dup_density:         float = 0.005   # g/cm³, only when dup_fingerprint = 0
+    dup_fingerprint:     float = 0.02
 
     # --- BASIN HOPPING (algorithm = "basin_hopping") ---
     # Read only by cryal/basin_hopping.py; the budget is [active_learning]'s.
@@ -474,8 +482,11 @@ _SCHEMA = {
         "max_rotation":         ("ga_max_rotation", _nonneg),
         "max_translation":      ("ga_max_translation", _nonneg),
         "fraction_mutated":     ("ga_fraction_mutated", _fraction),
-        "duplicate_energy":     ("ga_duplicate_energy", _nonneg),
-        "duplicate_density":    ("ga_duplicate_density", _nonneg),
+    },
+    "duplicates": {
+        "energy":               ("dup_energy", _nonneg),
+        "density":              ("dup_density", _nonneg),
+        "fingerprint":          ("dup_fingerprint", _unit),
     },
     "basin_hopping": {
         "walkers":              ("bh_walkers", _positive_int),

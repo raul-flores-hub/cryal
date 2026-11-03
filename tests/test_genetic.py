@@ -360,12 +360,12 @@ class TestSelection(unittest.TestCase):
         recs = [self.rec(1, -10.000, 1.00), self.rec(2, -10.001, 1.001),   # same
                 self.rec(3, -10.001, 1.10),                                # denser
                 self.rec(4, -9.0, 1.0)]
-        pop = G.distinct_lowest(recs, 10, Z=4, e_tol=0.002, rho_tol=0.005)
+        pop = G.distinct_lowest(recs, 10, Config(Z=4, dup_fingerprint=0.0))
         self.assertEqual([r['id'] for r in pop], [2, 3, 4])
 
     def test_population_is_the_lowest_and_no_larger_than_asked(self):
         recs = [self.rec(i, -float(i), 1.0 + 0.1 * i) for i in range(10)]
-        pop = G.distinct_lowest(recs, 3, Z=4, e_tol=0.002, rho_tol=0.005)
+        pop = G.distinct_lowest(recs, 3, Config(Z=4, dup_fingerprint=0.0))
         self.assertEqual([r['id'] for r in pop], [9, 8, 7])
 
     def test_full_tournament_picks_the_best_and_exclude_is_honoured(self):

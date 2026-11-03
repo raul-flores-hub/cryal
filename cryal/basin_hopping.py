@@ -58,8 +58,8 @@ from typing import Dict, List
 import numpy as np
 
 from .config import BH_MOVES, Config
-from .genetic import (MAX_ATTEMPTS, distinct_lowest, load_parents, realize,
-                      rotate, strain, translate)
+from .genetic import (MAX_ATTEMPTS, distinct_lowest, duplicate_settings,
+                      load_parents, realize, rotate, strain, translate)
 from .search import Strategy, run_search
 from .structure_gen import generate_structures
 
@@ -73,18 +73,19 @@ def accept(dE: float, kT: float, u: float) -> bool:
     return u < np.exp(-dE / kT)
 
 
-def starting_points(records: List[Dict], cfg: Config) -> List[Dict]:
+def starting_points(records: List[Dict], cfg: Config, mol=None) -> List[Dict]:
     """The walkers' starting structures: cycle 0's lowest distinct ones."""
     return distinct_lowest([r for r in records if r['cycle'] == 0], cfg.bh_walkers,
-                           cfg.Z, cfg.ga_duplicate_energy, cfg.ga_duplicate_density)
+                           cfg, mol)
 
 
-def positions(records: List[Dict], cfg: Config, before_cycle=None) -> Dict[int, Dict]:
+def positions(records: List[Dict], cfg: Config, mol=None,
+              before_cycle=None) -> Dict[int, Dict]:
     """
     Where each walker is: its last accepted record (of the cycles before
     `before_cycle`, if given), or its starting structure.
     """
-    here = dict(enumerate(starting_points(records, cfg)))
+    here = dict(enumerate(starting_points(records, cfg, mol)))
     for r in sorted(records, key=lambda r: r['id']):
         if r.get('accepted') and r.get('walker') in here:
             if before_cycle is None or r['cycle'] < before_cycle:
@@ -115,7 +116,7 @@ class BasinHopping(Strategy):
     def propose(self, ctx, cycle):
         cfg, logger, rng = ctx.cfg, ctx.logger, ctx.rng
         n = cfg.structures_per_cycle
-        here = positions(ctx.db.records, cfg)
+        here = positions(ctx.db.records, cfg, ctx.mol)
         genomes = load_parents(list(here.values()), ctx.mol, logger)
         walkers = [w for w in sorted(here) if here[w]['id'] in genomes]
         out: List[Dict] = []
@@ -170,7 +171,7 @@ class BasinHopping(Strategy):
         trials = [r for r in db.records if r['cycle'] == cycle and 'walker' in r]
         if not trials:
             return
-        here = positions(db.records, cfg, before_cycle=cycle)
+        here = positions(db.records, cfg, ctx.mol, before_cycle=cycle)
         moved = 0
         walkers = sorted({r['walker'] for r in trials})
         for w in walkers:
@@ -196,6 +197,7 @@ class BasinHopping(Strategy):
             'max_rotation':     cfg.bh_max_rotation,
             'max_translation':  cfg.bh_max_translation,
             'fraction_mutated': cfg.bh_fraction_mutated,
+            'duplicates':       duplicate_settings(cfg),
         }
 
 
