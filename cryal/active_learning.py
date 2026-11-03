@@ -233,11 +233,15 @@ def _record_result(s, relaxed, energy, cfg, cycle: int, step_name: str,
     }
     # Which records a genetic-algorithm child was bred from (cryal/genetic.py),
     # and which basin-hopping walker a trial belongs to (basin_hopping.py).
-    # BACH candidates carry neither key, and their records are unchanged.
+    # BACH candidates carry none of these keys, and their records are unchanged.
     if 'parents' in s:
         record['parents'] = list(s['parents'])
     if 'walker' in s:
         record['walker'] = int(s['walker'])
+    # A PSO particle and the velocity that moved it here (cryal/pso.py).
+    if 'particle' in s:
+        record['particle'] = int(s['particle'])
+        record['velocity'] = s['velocity']
     db.add(record)
     db.save()
 

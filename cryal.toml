@@ -28,6 +28,7 @@ algorithm   = "bach"                  # the search:
                                       #   "ga"      genetic algorithm, see [ga]
                                       #   "random"  pure random search: the baseline, no learning
                                       #   "basin_hopping"  Metropolis walks between minima, see [basin_hopping]
+                                      #   "pso"     particle swarm (CALYPSO-like), see [pso]
 
 [backend]
 # Which engine relaxes each candidate and returns its energy.
@@ -211,6 +212,21 @@ strain_sigma     = 0.10               # std of each strain-tensor component
 max_rotation     = 45.0               # degrees
 max_translation  = 1.0                # Å
 fraction_mutated = 0.5                # of the molecules, for rotation and translation
+
+[pso]
+# Only read when general.algorithm = "pso"; the budget is [active_learning]'s,
+# cycle 0 is BACH's. Each cycle, random_fraction of structures_per_cycle is
+# fresh random structures and the rest are the particles, one step each:
+#   v <- w v + c1 r1 (own best - x) + c2 r2 (swarm best - x),  x <- relaxed(x + v)
+# v = cell strain, centre shifts, molecular turns (molecule symmetry accounted).
+# The particles start from cycle 0's lowest distinct structures ([duplicates]).
+random_fraction = 0.4                 # CALYPSO's share of new random structures
+inertia         = [0.9, 0.4]          # w, falling linearly from the first cycle to the last
+c1              = 2.0                 # pull toward the particle's own best
+c2              = 2.0                 # pull toward the swarm's best
+max_strain      = 0.10                # per step, Frobenius norm of the cell strain
+max_shift       = 1.0                 # Å per step, per molecular centre
+max_turn        = 30.0                # degrees per step, per molecule
 
 [chpi]
 # CH-pi geometric optimizer: adjusts molecular positions to maximize

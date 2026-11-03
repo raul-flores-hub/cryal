@@ -272,6 +272,15 @@ def standardize(g: Genome) -> Genome:
     rigid body. Reduction also makes the cell's shortest axes its axes, which
     is the form `cell.min_axis` is a meaningful bound on.
     """
+    return standardize_with_rotation(g)[0]
+
+
+def standardize_with_rotation(g: Genome) -> Tuple[Genome, np.ndarray]:
+    """
+    standardize(), and the rotation it turned the crystal by: a Cartesian row
+    vector v of the old frame is v @ rot in the new one. Whatever is attached
+    to the crystal as a vector — a PSO velocity — has to turn with it.
+    """
     # ASE's convention (ase.build.tools.update_cell_and_positions): the
     # reduced lattice vectors are op.T @ cell, and fractional coordinates go
     # with inv(op).T. The reduced cell ASE returns is already rotated to the
@@ -285,7 +294,7 @@ def standardize(g: Genome) -> Genome:
         cell, frac = -cell, -frac
     std = Cell.fromcellpar(Cell(cell).cellpar()).array
     rot = np.linalg.solve(cell, std)            # cell @ rot = std, a rotation
-    return Genome(std, frac % 1.0, g.shapes @ rot)
+    return Genome(std, frac % 1.0, g.shapes @ rot), rot
 
 
 # ---------------------------------------------------------------------------
@@ -556,20 +565,23 @@ def stretch(g: Genome, mol: Molecule, contacts: Contacts, max_volume: float,
     return g
 
 
-def realize(child: Genome, mol: Molecule, cfg: Config) -> Tuple[Optional[Atoms], str]:
+def realize(child: Genome, mol: Molecule, cfg: Config,
+            standardized: bool = False) -> Tuple[Optional[Atoms], str]:
     """
     Turn a child into a structure the backend can take, or (None, why).
 
-    The child is standardized and held to cell.min_axis; then, at each of
+    The child is standardized (unless `standardized` says it already is, and
+    must not be turned again) and held to cell.min_axis; then, at each of
     volume.expansion_factors in turn — the top-down rule the generator uses
     for PyXtal — its molecules are pushed apart (`relieve`) and it is kept at
     the first volume where no contact is below [contacts] and no atoms
     overlap across the periodic boundary.
     """
-    try:
-        child = standardize(child)
-    except Exception as exc:                   # a degenerate cell
-        return None, f"cell ({type(exc).__name__})"
+    if not standardized:
+        try:
+            child = standardize(child)
+        except Exception as exc:               # a degenerate cell
+            return None, f"cell ({type(exc).__name__})"
     contacts = Contacts(mol, child.Z, cfg)
     why = "axis_short"
     for factor in cfg.volume_expansion_factors:

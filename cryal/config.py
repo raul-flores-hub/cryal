@@ -177,6 +177,16 @@ class Config:
     bh_max_translation:  float = 1.0     # Å
     bh_fraction_mutated: float = 0.5
 
+    # --- PARTICLE SWARM (algorithm = "pso") ---
+    # Read only by cryal/pso.py; the budget is [active_learning]'s.
+    pso_random_fraction: float = 0.4     # of each cycle: fresh random structures
+    pso_inertia:         List[float] = field(default_factory=lambda: [0.9, 0.4])
+    pso_c1:              float = 2.0     # pull toward the particle's own best
+    pso_c2:              float = 2.0     # pull toward the swarm's best
+    pso_max_strain:      float = 0.10    # per cycle, Frobenius norm of the strain
+    pso_max_shift:       float = 1.0     # Å per cycle, per molecular centre
+    pso_max_turn:        float = 30.0    # degrees per cycle, per molecule
+
     # --- CHPI OPTIMIZER ---
     use_chpi_optimizer:  bool  = True
     d_min:               float = 2.6
@@ -366,7 +376,7 @@ def _fraction(path, v):
 
 
 #: general.algorithm: BACH (active_learning.py), and the searches of search.py.
-ALGORITHMS = ("bach", "ga", "random", "basin_hopping")
+ALGORITHMS = ("bach", "ga", "random", "basin_hopping", "pso")
 
 #: The variation operators of cryal/genetic.py, in the order it reports them.
 GA_OPERATORS = ("crossover", "strain", "rotation", "translation", "immigrant")
@@ -391,6 +401,13 @@ def _weights(names, what):
             raise ValueError(f"{path}: at least one {what} needs a positive weight")
         return out
     return conv
+
+
+def _inertia(path, v):
+    """[start, end]: the inertia weight, falling linearly over the run."""
+    if not (isinstance(v, list) and len(v) == 2):
+        _fail(path, v, "[start, end]")
+    return [_nonneg(f"{path}[0]", v[0]), _nonneg(f"{path}[1]", v[1])]
 
 
 #: The moves of cryal/basin_hopping.py: the GA's mutations, from one parent.
@@ -496,6 +513,15 @@ _SCHEMA = {
         "max_rotation":         ("bh_max_rotation", _nonneg),
         "max_translation":      ("bh_max_translation", _nonneg),
         "fraction_mutated":     ("bh_fraction_mutated", _fraction),
+    },
+    "pso": {
+        "random_fraction":      ("pso_random_fraction", _unit),
+        "inertia":              ("pso_inertia", _inertia),
+        "c1":                   ("pso_c1", _nonneg),
+        "c2":                   ("pso_c2", _nonneg),
+        "max_strain":           ("pso_max_strain", _nonneg),
+        "max_shift":            ("pso_max_shift", _nonneg),
+        "max_turn":             ("pso_max_turn", _nonneg),
     },
     "chpi": {
         "enabled":              ("use_chpi_optimizer", _bool),
@@ -738,6 +764,10 @@ def print_config_summary(cfg: Config, logger=None):
     if cfg.algorithm == "random":
         # In place of the GP line, which this run does not read.
         lines[-1] = "  Search:          pure random search (no GP, no pool, no breeding)"
+    if cfg.algorithm == "pso":
+        lines[-1] = (f"  Search:          particle swarm — {cfg.pso_random_fraction:g} of each "
+                     f"cycle random, inertia {cfg.pso_inertia[0]:g} → "
+                     f"{cfg.pso_inertia[1]:g}, c1 {cfg.pso_c1:g}, c2 {cfg.pso_c2:g}")
     if cfg.algorithm == "basin_hopping":
         moves = ", ".join(f"{k} {w:g}" for k, w in cfg.bh_moves.items() if w > 0)
         lines[-1] = (f"  Search:          basin hopping — {cfg.bh_walkers} walkers, "

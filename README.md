@@ -157,6 +157,7 @@ starts from PyXtal alone.
 | `cryal/active_learning.py` | the active-learning loop |
 | `cryal/search.py` | the loop shared by the searches other than BACH; pure random search |
 | `cryal/basin_hopping.py` | basin hopping (`general.algorithm = "basin_hopping"`) |
+| `cryal/pso.py` | particle swarm (`general.algorithm = "pso"`) |
 | `cryal/fingerprint.py` | structural fingerprint that tells two minima apart (`[duplicates]`) |
 | `cryal/genetic.py` | the genetic algorithm (`general.algorithm = "ga"`), also used by BACH + GA |
 | `cryal/backends/uma.py` | UMA as a named backend, with its mandatory task |
@@ -208,6 +209,7 @@ differ only in the way they propose, and each cycle's log — and
 | `"random"` | fresh random structures every cycle, nothing learnt: the baseline |
 | `"ga"` | children of the best distinct structures so far (below) |
 | `"basin_hopping"` | Metropolis walks from minimum to minimum (below) |
+| `"pso"` | a particle swarm, CALYPSO-like (below) |
 
 `"random"` is not `gp.enabled = false`: that still adds BACH's perturbed
 incumbents of the pool to every cycle. Pure random search learns nothing from
@@ -290,6 +292,35 @@ temperature = 0.01        # kT in eV per molecule, about 1 kJ/mol; 0 = downhill 
 Each trial's record names its `walker`, the minimum it was made from
 (`parents`) and whether the walker moved there (`accepted`), so a walk can be
 followed in the database and a resumed run picks every walker up where it was.
+
+### Particle swarm
+
+`general.algorithm = "pso"` is the particle-swarm optimization CALYPSO made
+standard for crystals: a swarm of structures, each moving every cycle by a
+velocity that keeps some of where it was going (the inertia, falling from 0.9
+to 0.4 over the run) and is pulled toward the best structure that particle has
+visited and the best one found so far. Each new position is relaxed and the
+particle continues from the relaxed structure. A share of every cycle,
+`random_fraction` (40 %, as CALYPSO), is fresh random structures.
+
+```toml
+[general]
+algorithm = "pso"
+
+[pso]
+random_fraction = 0.4
+inertia         = [0.9, 0.4]
+c1              = 2.0        # toward the particle's own best
+c2              = 2.0        # toward the swarm's best
+```
+
+The arithmetic is done on the crystals of the GA (a cell and rigid molecules):
+a velocity is a strain of the cell, a shift of every molecular centre and a turn
+of every molecule. To pull one crystal toward another, molecules are matched
+across the two (over origin shifts too), and orientations are compared up to the
+molecule's own symmetry — benzene turned 60° about its axis is benzene not
+turned at all. Each record of a step names its `particle` and the `velocity`
+that moved it, so a resumed run carries the swarm on where it was.
 
 ### Telling structures apart
 
