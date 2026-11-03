@@ -155,6 +155,7 @@ starts from PyXtal alone.
 | `tools/sg_kernel_cv.py` | cross-validation on finished runs that chooses the space-group kernel, by a protocol fixed in its docstring |
 | `cryal/active_learning.py` | the active-learning loop |
 | `cryal/search.py` | the loop shared by the searches other than BACH; pure random search |
+| `cryal/basin_hopping.py` | basin hopping (`general.algorithm = "basin_hopping"`) |
 | `cryal/genetic.py` | the genetic algorithm (`general.algorithm = "ga"`), also used by BACH + GA |
 | `cryal/backends/uma.py` | UMA as a named backend, with its mandatory task |
 | `cryal/parallel.py` | distributing a cycle's candidates over several machines |
@@ -204,6 +205,7 @@ differ only in the way they propose, and each cycle's log — and
 | `"bach"` | half biased by the GP's Expected Improvement, half random, plus perturbed incumbents |
 | `"random"` | fresh random structures every cycle, nothing learnt: the baseline |
 | `"ga"` | children of the best distinct structures so far (below) |
+| `"basin_hopping"` | Metropolis walks from minimum to minimum (below) |
 
 `"random"` is not `gp.enabled = false`: that still adds BACH's perturbed
 incumbents of the pool to every cycle. Pure random search learns nothing from
@@ -262,6 +264,30 @@ false` the whole batch is random and the share applies to all of it. The
 default, 0, is BACH as published. Each cycle's log lists what every source —
 biased, random, perturbed, each GA operator — contributed and which one found
 a new best.
+
+### Basin hopping
+
+`general.algorithm = "basin_hopping"` is the undirected version of what BACH
+directs: walk from one relaxed minimum to the next, perturbing the current one
+and moving by the Metropolis rule. `walkers` chains run side by side, so that a
+cycle's trials can still be relaxed together, starting from cycle 0's lowest
+distinct structures. Each cycle every walker makes its share of the
+`structures_per_cycle` trial moves — the GA's strain, rotation and translation —
+and moves to its best trial if that is lower, or else with probability
+exp(−ΔE/kT), ΔE per molecule.
+
+```toml
+[general]
+algorithm = "basin_hopping"
+
+[basin_hopping]
+walkers     = 10
+temperature = 0.01        # kT in eV per molecule, about 1 kJ/mol; 0 = downhill only
+```
+
+Each trial's record names its `walker`, the minimum it was made from
+(`parents`) and whether the walker moved there (`accepted`), so a walk can be
+followed in the database and a resumed run picks every walker up where it was.
 
 ## Energy backends
 

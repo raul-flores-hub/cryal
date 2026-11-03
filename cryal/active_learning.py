@@ -231,10 +231,13 @@ def _record_result(s, relaxed, energy, cfg, cycle: int, step_name: str,
         'gamma':        round(cp['gamma'], 3),
         'cif_path':     cif_path,
     }
-    # Which records a genetic-algorithm child was bred from (cryal/genetic.py).
-    # BACH candidates carry no such key, and their records are unchanged.
+    # Which records a genetic-algorithm child was bred from (cryal/genetic.py),
+    # and which basin-hopping walker a trial belongs to (basin_hopping.py).
+    # BACH candidates carry neither key, and their records are unchanged.
     if 'parents' in s:
         record['parents'] = list(s['parents'])
+    if 'walker' in s:
+        record['walker'] = int(s['walker'])
     db.add(record)
     db.save()
 

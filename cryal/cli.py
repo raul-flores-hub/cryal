@@ -128,6 +128,8 @@ def main(argv=None):
             from .genetic import run
         elif cfg.algorithm == "random":
             from .search import run_random as run
+        elif cfg.algorithm == "basin_hopping":
+            from .basin_hopping import run
         else:
             from .active_learning import run
         run(cfg)

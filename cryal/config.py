@@ -158,6 +158,17 @@ class Config:
     ga_duplicate_energy: float = 0.002   # eV per molecule
     ga_duplicate_density: float = 0.005  # g/cm³
 
+    # --- BASIN HOPPING (algorithm = "basin_hopping") ---
+    # Read only by cryal/basin_hopping.py; the budget is [active_learning]'s.
+    bh_walkers:          int   = 10      # independent chains, from cycle 0's best
+    bh_temperature:      float = 0.01    # kT, eV per molecule; 0 = downhill only
+    bh_moves:            Dict[str, float] = field(default_factory=lambda: dict(
+        strain=1.0, rotation=1.0, translation=1.0))
+    bh_strain_sigma:     float = 0.10
+    bh_max_rotation:     float = 45.0    # degrees
+    bh_max_translation:  float = 1.0     # Å
+    bh_fraction_mutated: float = 0.5
+
     # --- CHPI OPTIMIZER ---
     use_chpi_optimizer:  bool  = True
     d_min:               float = 2.6
@@ -347,7 +358,7 @@ def _fraction(path, v):
 
 
 #: general.algorithm: BACH (active_learning.py), and the searches of search.py.
-ALGORITHMS = ("bach", "ga", "random")
+ALGORITHMS = ("bach", "ga", "random", "basin_hopping")
 
 #: The variation operators of cryal/genetic.py, in the order it reports them.
 GA_OPERATORS = ("crossover", "strain", "rotation", "translation", "immigrant")
@@ -355,21 +366,30 @@ GA_OPERATORS = ("crossover", "strain", "rotation", "translation", "immigrant")
 GA_BREEDING = GA_OPERATORS[:4]
 
 
-def _ga_operators(path, v):
-    """{ crossover = 0.5, ... } -> a weight for every operator; one left out is 0."""
-    if not isinstance(v, dict) or not v:
-        _fail(path, v, "a table { operator = weight, ... }")
-    out = dict.fromkeys(GA_OPERATORS, 0.0)
-    for k, w in v.items():
-        if k not in GA_OPERATORS:
-            close = difflib.get_close_matches(k, GA_OPERATORS, n=1)
-            hint = f"; did you mean '{close[0]}'?" if close else \
-                   f"; the operators are {', '.join(GA_OPERATORS)}"
-            raise ValueError(f"{path}.{k}: unknown operator{hint}")
-        out[k] = _nonneg(f"{path}.{k}", w)
-    if sum(out.values()) <= 0:
-        raise ValueError(f"{path}: at least one operator needs a positive weight")
-    return out
+def _weights(names, what):
+    """{ name = weight, ... } over `names` -> a weight for every one; one left out is 0."""
+    def conv(path, v):
+        if not isinstance(v, dict) or not v:
+            _fail(path, v, f"a table {{ {what} = weight, ... }}")
+        out = dict.fromkeys(names, 0.0)
+        for k, w in v.items():
+            if k not in names:
+                close = difflib.get_close_matches(k, names, n=1)
+                hint = f"; did you mean '{close[0]}'?" if close else \
+                       f"; the {what}s are {', '.join(names)}"
+                raise ValueError(f"{path}.{k}: unknown {what}{hint}")
+            out[k] = _nonneg(f"{path}.{k}", w)
+        if sum(out.values()) <= 0:
+            raise ValueError(f"{path}: at least one {what} needs a positive weight")
+        return out
+    return conv
+
+
+#: The moves of cryal/basin_hopping.py: the GA's mutations, from one parent.
+BH_MOVES = ("strain", "rotation", "translation")
+
+_ga_operators = _weights(GA_OPERATORS, "operator")
+_bh_moves = _weights(BH_MOVES, "move")
 
 
 _LIST_STR   = _list_of(_str, "strings")
@@ -456,6 +476,15 @@ _SCHEMA = {
         "fraction_mutated":     ("ga_fraction_mutated", _fraction),
         "duplicate_energy":     ("ga_duplicate_energy", _nonneg),
         "duplicate_density":    ("ga_duplicate_density", _nonneg),
+    },
+    "basin_hopping": {
+        "walkers":              ("bh_walkers", _positive_int),
+        "temperature":          ("bh_temperature", _nonneg),
+        "moves":                ("bh_moves", _bh_moves),
+        "strain_sigma":         ("bh_strain_sigma", _nonneg),
+        "max_rotation":         ("bh_max_rotation", _nonneg),
+        "max_translation":      ("bh_max_translation", _nonneg),
+        "fraction_mutated":     ("bh_fraction_mutated", _fraction),
     },
     "chpi": {
         "enabled":              ("use_chpi_optimizer", _bool),
@@ -698,6 +727,10 @@ def print_config_summary(cfg: Config, logger=None):
     if cfg.algorithm == "random":
         # In place of the GP line, which this run does not read.
         lines[-1] = "  Search:          pure random search (no GP, no pool, no breeding)"
+    if cfg.algorithm == "basin_hopping":
+        moves = ", ".join(f"{k} {w:g}" for k, w in cfg.bh_moves.items() if w > 0)
+        lines[-1] = (f"  Search:          basin hopping — {cfg.bh_walkers} walkers, "
+                     f"kT {cfg.bh_temperature:g} eV/molecule ({moves})")
     if cfg.algorithm == "ga":
         # Said in place of the GP line, which a GA run does not read. A BACH
         # run prints exactly the summary it printed before the GA existed.

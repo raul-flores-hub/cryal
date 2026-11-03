@@ -27,6 +27,7 @@ algorithm   = "bach"                  # the search:
                                       #   "bach"    GP + Expected Improvement (the published method)
                                       #   "ga"      genetic algorithm, see [ga]
                                       #   "random"  pure random search: the baseline, no learning
+                                      #   "basin_hopping"  Metropolis walks between minima, see [basin_hopping]
 
 [backend]
 # Which engine relaxes each candidate and returns its energy.
@@ -185,6 +186,20 @@ max_translation   = 1.0               # Å
 fraction_mutated  = 0.5               # of the molecules, for rotation and translation
 duplicate_energy  = 0.002             # eV per molecule
 duplicate_density = 0.005             # g/cm³
+
+[basin_hopping]
+# Only read when general.algorithm = "basin_hopping"; the budget is
+# [active_learning]'s, cycle 0 is BACH's. `walkers` chains start from cycle 0's
+# lowest distinct structures; each cycle every walker makes its share of
+# structures_per_cycle trial moves from its current minimum and moves to its
+# best trial if dE <= 0, or else with probability exp(-dE / kT), dE per molecule.
+walkers          = 10
+temperature      = 0.01               # kT, eV per molecule (0.01 ≈ 1 kJ/mol); 0 = downhill only
+moves            = { strain = 1, rotation = 1, translation = 1 }   # weights, as the GA's mutations
+strain_sigma     = 0.10               # std of each strain-tensor component
+max_rotation     = 45.0               # degrees
+max_translation  = 1.0                # Å
+fraction_mutated = 0.5                # of the molecules, for rotation and translation
 
 [chpi]
 # CH-pi geometric optimizer: adjusts molecular positions to maximize
