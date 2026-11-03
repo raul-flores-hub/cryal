@@ -151,6 +151,32 @@ class TestGenome(Fixture):
         np.testing.assert_allclose(internal_distances(g.shapes[0]),
                                    internal_distances(chain), atol=1e-9)
 
+    def test_a_skewed_cell_does_not_misplace_an_atom(self):
+        # A P-1 cell PyXtal drew, 4.4 Å high across a: there, rounding the
+        # fractional coordinates takes benzene's 2.41 Å meta C...C pair (which
+        # the integrity check's bond list counts as a bond) through the wrong
+        # image. Every molecule must come out with the reference's geometry.
+        from ase.cell import Cell
+        cell = Cell.fromcellpar([4.72, 8.71, 6.99, 101.72, 73.76, 82.14]).array
+        from ase.io import read
+        ref = read(BENZENE).positions
+        for seed in range(20):
+            atoms = crystal(BENZENE, cell, [[0.2, 0.3, 0.1], [0.8, 0.7, 0.9]],
+                            np.random.default_rng(seed))
+            g = G.genome_from_atoms(atoms, self.mol)
+            for shape in g.shapes:
+                np.testing.assert_allclose(internal_distances(shape),
+                                           internal_distances(ref), atol=1e-6)
+
+    def test_the_walk_takes_only_the_covalent_bonds(self):
+        lengths = []
+        from ase.io import read
+        ref = read(BENZENE).positions
+        for i, j in self.mol.walk:
+            lengths.append(np.linalg.norm(ref[i] - ref[j]))
+        self.assertEqual(len(self.mol.walk), 11)            # a tree on 12 atoms
+        self.assertLess(max(lengths), 1.5)
+
     def test_a_crystal_out_of_molecule_order_is_refused(self):
         atoms = crystal(BENZENE, SKEWED, CENTRES, self.rng)
         shuffled = atoms[np.r_[6:12, 0:6, 12:len(atoms)]]

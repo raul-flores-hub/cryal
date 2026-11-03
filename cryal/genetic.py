@@ -92,6 +92,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from ase import Atoms
 from ase.cell import Cell
+from ase.geometry import find_mic
 from ase.io import read
 
 from .backends import get_reference_bonds
@@ -110,10 +111,23 @@ MAX_ATTEMPTS = 50
 
 @dataclass
 class Molecule:
-    """What every crystal of this run is made of: symbols, masses, bonds."""
+    """
+    What every crystal of this run is made of: symbols, masses, and the walk
+    that rebuilds one molecule from its atoms in a periodic cell.
+
+    `walk` is a list of (from, to) atom pairs, a minimum spanning tree of the
+    molecule's bond graph weighted by bond length, in the order a walk from
+    each fragment's first atom takes them. The graph is the integrity
+    check's (backends.get_reference_bonds), which counts generously: in
+    benzene it lists the 2.41 Å meta C...C pairs as bonds. A walk along one
+    of those can step to the wrong periodic image in a cell 4.4 Å across, and
+    misplace an atom; the shortest edges, the real covalent bonds, cannot.
+    """
     symbols: List[str]
     masses: np.ndarray
     neighbours: List[List[int]]
+    walk: List[Tuple[int, int]]
+    roots: List[int]
 
     @property
     def size(self) -> int:
@@ -122,46 +136,74 @@ class Molecule:
     @classmethod
     def from_file(cls, path: str) -> "Molecule":
         mol = read(path)
-        neighbours = [[] for _ in range(len(mol))]
+        n = len(mol)
+        neighbours = [[] for _ in range(n)]
         for i, j, _ in get_reference_bonds(path):
             neighbours[i].append(j)
             neighbours[j].append(i)
-        return cls(mol.get_chemical_symbols(), mol.get_masses(), neighbours)
+        walk, roots = _spanning_walk(mol.positions, neighbours)
+        return cls(mol.get_chemical_symbols(), mol.get_masses(), neighbours, walk, roots)
 
 
-def _mic(d: np.ndarray, cell: np.ndarray, inv: np.ndarray) -> np.ndarray:
-    frac = d @ inv
-    return (frac - np.round(frac)) @ cell
+def _spanning_walk(positions: np.ndarray, neighbours: List[List[int]]):
+    """Prim's minimum spanning tree of each fragment, as (from, to) steps."""
+    n = len(positions)
+    seen = np.zeros(n, dtype=bool)
+    walk, roots = [], []
+    for root in range(n):
+        if seen[root]:
+            continue
+        roots.append(root)
+        seen[root] = True
+        frontier = [(np.linalg.norm(positions[j] - positions[root]), root, j)
+                    for j in neighbours[root]]
+        while frontier:
+            frontier.sort()
+            _, i, j = frontier.pop(0)
+            if seen[j]:
+                continue
+            seen[j] = True
+            walk.append((int(i), int(j)))
+            frontier += [(np.linalg.norm(positions[k] - positions[j]), j, k)
+                         for k in neighbours[j] if not seen[k]]
+    return walk, roots
 
 
 def _whole(block: np.ndarray, cell: np.ndarray, mol: Molecule) -> np.ndarray:
     """
     One molecule's atoms made contiguous, by walking its bonds.
 
-    Each bond is taken at its minimum image and the walk adds them up, so the
-    molecule comes out whole whatever its size relative to the cell — which
-    is what `utils.unwrap_molecule`, imaging every atom against the first
-    one, cannot promise for a molecule longer than half the cell. A molecule
-    of several fragments has each fragment placed nearest the first atom.
+    Each step of mol.walk is taken at its minimum image and the walk adds
+    them up, so the molecule comes out whole whatever its size relative to
+    the cell — which is what `utils.unwrap_molecule`, imaging every atom
+    against the first one, cannot promise for a molecule longer than half
+    the cell. The images are ASE's exact ones (find_mic): rounding fractional
+    coordinates picks the wrong image for a vector longer than half the
+    cell's height, which a skewed cell makes short. A molecule of several
+    fragments has each fragment placed nearest the first atom.
     """
-    inv = np.linalg.inv(cell)
     out = block.copy()
-    seen = np.zeros(len(block), dtype=bool)
-    for root in range(len(block)):
-        if seen[root]:
-            continue
-        if root:
-            out[root] = out[0] + _mic(block[root] - block[0], cell, inv)
-        seen[root] = True
-        stack = [root]
-        while stack:
-            i = stack.pop()
-            for j in mol.neighbours[i]:
-                if not seen[j]:
-                    out[j] = out[i] + _mic(block[j] - block[i], cell, inv)
-                    seen[j] = True
-                    stack.append(j)
+    if mol.walk:
+        frm, to = np.array(mol.walk).T
+        steps, _ = find_mic(block[to] - block[frm], cell, pbc=True)
+        for (i, j), v in zip(mol.walk, steps):
+            out[j] = out[i] + v
+    for root in mol.roots[1:]:
+        # Fragments after the first: their root nearest the first atom, and
+        # the rest of the fragment moved with it.
+        frag = _fragment(mol, root)
+        shift, _ = find_mic((block[root] - out[0])[None], cell, pbc=True)
+        out[frag] += (out[0] + shift[0]) - out[root]
     return out
+
+
+def _fragment(mol: Molecule, root: int) -> List[int]:
+    """The atoms the walk reaches from `root`, root included."""
+    members = {root}
+    for i, j in mol.walk:
+        if i in members:
+            members.add(j)
+    return sorted(members)
 
 
 # ---------------------------------------------------------------------------
