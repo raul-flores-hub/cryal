@@ -23,8 +23,10 @@ random_seed = 33936
 output_dir  = "AL_results"            # all output goes here
 log_level   = "INFO"                  # "INFO" or "DEBUG"
 resume      = false                   # true (or pass --resume) = continue an interrupted run in output_dir
-algorithm   = "bach"                  # the search: "bach" (GP + Expected Improvement, the
-                                      # published method) or "ga" (genetic algorithm, see [ga])
+algorithm   = "bach"                  # the search:
+                                      #   "bach"    GP + Expected Improvement (the published method)
+                                      #   "ga"      genetic algorithm, see [ga]
+                                      #   "random"  pure random search: the baseline, no learning
 
 [backend]
 # Which engine relaxes each candidate and returns its energy.

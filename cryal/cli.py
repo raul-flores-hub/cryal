@@ -126,6 +126,8 @@ def main(argv=None):
     try:
         if cfg.algorithm == "ga":
             from .genetic import run
+        elif cfg.algorithm == "random":
+            from .search import run_random as run
         else:
             from .active_learning import run
         run(cfg)

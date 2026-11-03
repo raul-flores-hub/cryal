@@ -551,7 +551,7 @@ def run(cfg: Config):
                             f"V={br['volume']:.0f} Å³  (cycle {br['cycle']})")
 
             if ga is not None:
-                from .genetic import report_cycle
+                from .search import report_cycle
                 report_cycle(db.records, cycle, best_now, logger)
 
             # Save per-cycle report

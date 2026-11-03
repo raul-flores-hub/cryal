@@ -20,10 +20,11 @@ What stays the same as BACH
 ===========================
 Everything that turns a candidate into a number: the energy backend, the
 pre-relaxation gate, the integrity check, the CH–π step, the parallel pool,
-the database, the stopping rule and resume. Generation 0 is BACH's cycle 0
-call for call, and `[active_learning]` sets the budget of both. What differs
-is only how the next candidates are proposed, which is what a comparison
-between the two should isolate.
+the database, the stopping rule and resume — the loop is cryal/search.py,
+shared by every search but BACH. Generation 0 is BACH's cycle 0 call for
+call, and `[active_learning]` sets the budget of both. What differs is only
+how the next candidates are proposed, which is what a comparison between the
+two should isolate.
 
 Call for call is not structure for structure. PyXtal places the molecules
 with a generator of its own, seeded from the operating system rather than
@@ -85,10 +86,6 @@ population is a function of the database alone, a resumed run continues
 from exactly where an uninterrupted one would have been.
 """
 
-import json
-import os
-import random
-import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -97,19 +94,11 @@ from ase import Atoms
 from ase.cell import Cell
 from ase.io import read
 
-from .active_learning import (CrystalDatabase, _apply_chpi, _evaluate_batch,
-                              _reconstruct_resume_state, _save_cycle_report)
-from .backends import get_backend, get_reference_bonds
-from .config import GA_BREEDING, GA_OPERATORS, Config, print_config_summary
-from .parallel import build_pool
-from .structure_gen import generate_structures, load_seeds
-from .utils import check_bond_integrity, setup_logger
-
-try:
-    from .chpi_optimizer import analyze_molecule
-    _CHPI_AVAILABLE = True
-except ImportError:
-    _CHPI_AVAILABLE = False
+from .backends import get_reference_bonds
+from .config import GA_BREEDING, GA_OPERATORS, Config
+from .search import Strategy, run_search
+from .structure_gen import generate_structures
+from .utils import check_bond_integrity
 
 #: Attempts at one child before its slot is given up.
 MAX_ATTEMPTS = 50
@@ -720,67 +709,31 @@ def bach_children(records: List[Dict], n: int, mol: Molecule, cfg: Config,
 # Reports
 # ---------------------------------------------------------------------------
 
-#: Where a record came from, in the order the reports list them.
-FAMILIES = ("biased", "random", "perturb", "seed") + GA_OPERATORS + ("other",)
+# ---------------------------------------------------------------------------
+# The run
+# ---------------------------------------------------------------------------
 
+class GeneticSearch(Strategy):
+    """general.algorithm = "ga": every generation bred from the population."""
 
-def source_family(source: str) -> str:
-    """
-    Where a record came from, from its source: a GA operator, or for the
-    generator's structures 'biased' (toward a GP suggestion), 'random',
-    'perturb' (a perturbed seed or, from cycle 1 on, a perturbed incumbent
-    of the pool) and 'seed'.
-    """
-    if source.startswith('ga_'):
-        for op in GA_OPERATORS:
-            if source.startswith(f'ga_{op}'):
-                return op
-    for family in ("biased", "random", "perturb", "seed"):
-        if source.startswith(family):
-            return family
-    return 'other'
+    name = "ga"
+    title = "genetic algorithm"
+    unit = "GENERATION"
 
+    def propose(self, ctx, cycle):
+        cfg = ctx.cfg
+        population = distinct_lowest(ctx.db.records, cfg.ga_population_size, cfg.Z,
+                                     cfg.ga_duplicate_energy, cfg.ga_duplicate_density)
+        genomes = load_parents(population, ctx.mol, ctx.logger)
+        if population:
+            ctx.logger.info(f"Population: {len(genomes)} distinct parents, "
+                            f"E in [{population[0]['energy']:.4f}, "
+                            f"{population[-1]['energy']:.4f}] eV")
+        return breed(population, genomes, cfg.structures_per_cycle,
+                     ctx.mol, cfg, ctx.rng, ctx.logger)
 
-def source_stats(records: List[Dict], cycle: Optional[int] = None) -> Dict[str, Dict]:
-    """Per source family: candidates kept and their best energy (one cycle or all)."""
-    stats: Dict[str, Dict] = {}
-    for r in records:
-        if cycle is not None and r['cycle'] != cycle:
-            continue
-        s = stats.setdefault(source_family(r['source']), {'kept': 0, 'best_energy': None})
-        s['kept'] += 1
-        if s['best_energy'] is None or r['energy'] < s['best_energy']:
-            s['best_energy'] = r['energy']
-    return {f: stats[f] for f in FAMILIES if f in stats}
-
-
-def report_cycle(records: List[Dict], cycle: int, best_before, logger):
-    """What each source contributed this cycle, and which one found a new best."""
-    for f, s in source_stats(records, cycle).items():
-        logger.info(f"    {f:<12} kept {s['kept']:>3}   best E={s['best_energy']:.4f} eV")
-    if not records:
-        return
-    br = min(records, key=lambda r: r['energy'])
-    if br['cycle'] == cycle and (best_before is None or br['energy'] < best_before):
-        parents = f" (parents {br['parents']})" if br.get('parents') else ""
-        logger.info(f"  New best from {source_family(br['source'])}{parents}")
-
-
-def _save_final_report(db: CrystalDatabase, cfg: Config):
-    report = {
-        'algorithm':       'ga',
-        'total_evaluated': len(db),
-        'num_cycles_run':  max(r['cycle'] for r in db.records) if db.records else 0,
-        'best_energy':     db.best_energy(),
-        'top_10':          db.top_n(10),
-        'source_stats':    source_stats(db.records),
-        'config': {
-            'molecule':          cfg.molecule_file,
-            'Z':                 cfg.Z,
-            'density_min':       cfg.density_min,
-            'density_max':       cfg.density_max,
-            'space_groups':      cfg.space_groups,
-            'sg_weights':        cfg.sg_weights,
+    def settings(self, cfg):
+        return {
             'population_size':   cfg.ga_population_size,
             'tournament_size':   cfg.ga_tournament_size,
             'operators':         cfg.ga_operators,
@@ -790,148 +743,9 @@ def _save_final_report(db: CrystalDatabase, cfg: Config):
             'fraction_mutated':  cfg.ga_fraction_mutated,
             'duplicate_energy':  cfg.ga_duplicate_energy,
             'duplicate_density': cfg.ga_duplicate_density,
-        },
-    }
-    with open(os.path.join(cfg.output_dir, "final_report.json"), 'w') as f:
-        json.dump(report, f, indent=2)
+        }
 
-
-# ---------------------------------------------------------------------------
-# The run
-# ---------------------------------------------------------------------------
 
 def run(cfg: Config):
-    """Execute the genetic-algorithm search. Mirrors active_learning.run."""
-    os.makedirs(cfg.output_dir, exist_ok=True)
-    os.makedirs(os.path.join(cfg.output_dir, "steps"), exist_ok=True)
-    os.makedirs(os.path.join(cfg.output_dir, "structures"), exist_ok=True)
-
-    logger = setup_logger("cryal", os.path.join(cfg.output_dir, "cryal.log"),
-                          cfg.log_level)
-    print_config_summary(cfg, logger)
-
-    db = CrystalDatabase(db_path=os.path.join(cfg.output_dir, "database.json"),
-                         cif_dir=os.path.join(cfg.output_dir, "structures"))
-
-    # --- Resume: the same rule as BACH, and the population needs nothing
-    # more, since it is read from the database at every generation.
-    resume = bool(cfg.resume) and len(db) > 0
-    start_cycle = 1
-    best_energy_prev = None
-    no_improve_count = 0
-    if cfg.resume and len(db) == 0:
-        logger.warning(f"resume=True but no existing database in {db.db_path} — "
-                       "starting a fresh run from generation 0")
-    if resume:
-        last_cycle = max(r['cycle'] for r in db.records)
-        start_cycle = last_cycle + 1
-        best_energy_prev, no_improve_count = _reconstruct_resume_state(db, start_cycle)
-        logger.info(f"RESUME — {len(db)} structures loaded; continuing at "
-                    f"generation {start_cycle} (no_improve_count = {no_improve_count})")
-
-    # Seeded exactly as active_learning.run is. See the module docstring for
-    # why that does not make generation 0 the same structures as cycle 0.
-    seed = cfg.random_seed + (start_cycle * 7919 if resume else 0)
-    random.seed(seed)
-    np.random.seed(seed)
-    rng = np.random.default_rng(seed)
-
-    mol = Molecule.from_file(cfg.molecule_file)
-    mol_size = mol.size
-    logger.info(f"Molecule: {mol_size} atoms/molecule  MW={cfg.mol_weight:.2f} g/mol")
-    logger.info(f"Volume range: [{cfg.volume_min():.0f}, {cfg.volume_max():.0f}] Å³")
-
-    backend = get_backend(cfg, logger)
-    logger.info(f"Energy backend: {backend.describe()}")
-    ref_bonds = get_reference_bonds(cfg.molecule_file, cfg.integrity_max_bond_ratio) \
-        if cfg.check_molecular_integrity else []
-    pool = build_pool(cfg, backend, logger)
-
-    try:
-        mol_ring_info = ch_pairs = None
-        if cfg.use_chpi_optimizer and _CHPI_AVAILABLE:
-            mol_ring_info, ch_pairs = analyze_molecule(cfg.molecule_file, logger)
-        elif cfg.use_chpi_optimizer:
-            logger.warning("CH-pi optimizer requested but RDKit not available — disabled")
-
-        def evaluate(structs, cycle):
-            structs = _apply_chpi(structs, mol_ring_info, ch_pairs, mol_size, cfg, logger)
-            batch_start = sum(1 for r in db.records if r['cycle'] < cycle)
-            return _evaluate_batch(structs, cfg, backend, cycle=cycle,
-                                   batch_start=batch_start, ref_bonds=ref_bonds,
-                                   mol_size=mol_size, db=db, logger=logger, pool=pool)
-
-        # ================================================================
-        # Generation 0: BACH's cycle 0
-        # ================================================================
-        if not resume:
-            logger.info("=" * 60)
-            logger.info("GENERATION 0 — initial population (blind random generation)")
-            logger.info("=" * 60)
-            t0 = time.time()
-            structs = generate_structures(cfg.molecule_file, cfg, cfg.initial_structures,
-                                          suggestions=None, logger=logger)
-            seeds = load_seeds(cfg, mol_size, logger)
-            if seeds:
-                logger.info(f"Loaded {len(seeds)} seed/perturbation structures")
-                structs.extend(seeds)
-            n_ok = evaluate(structs, 0)
-            logger.info(f"Generation 0 complete: {n_ok}/{len(structs)} OK  "
-                        f"[{time.time()-t0:.0f}s]")
-
-        # ================================================================
-        # Generations start_cycle .. num_cycles
-        # ================================================================
-        for cycle in range(start_cycle, cfg.num_cycles + 1):
-            logger.info("=" * 60)
-            logger.info(f"GENERATION {cycle}/{cfg.num_cycles} — genetic algorithm")
-            logger.info("=" * 60)
-            t0 = time.time()
-
-            best_now = db.best_energy()
-            if best_energy_prev is not None and best_now is not None:
-                if abs(best_now - best_energy_prev) < 1e-4:
-                    no_improve_count += 1
-                    logger.info(f"No improvement ({no_improve_count}/"
-                                f"{cfg.max_no_improve_cycles})")
-                    if no_improve_count >= cfg.max_no_improve_cycles:
-                        logger.info("Convergence criterion met — stopping early")
-                        break
-                else:
-                    no_improve_count = 0
-            best_energy_prev = best_now
-
-            population = distinct_lowest(db.records, cfg.ga_population_size, cfg.Z,
-                                         cfg.ga_duplicate_energy, cfg.ga_duplicate_density)
-            genomes = load_parents(population, mol, logger)
-            if population:
-                logger.info(f"Population: {len(genomes)} distinct parents, "
-                            f"E in [{population[0]['energy']:.4f}, "
-                            f"{population[-1]['energy']:.4f}] eV")
-
-            structs = breed(population, genomes, cfg.structures_per_cycle,
-                            mol, cfg, rng, logger)
-            n_ok = evaluate(structs, cycle)
-            logger.info(f"Generation {cycle} complete: {n_ok}/{len(structs)} OK  "
-                        f"[{time.time()-t0:.0f}s]")
-            report_cycle(db.records, cycle, best_now, logger)
-            if db.best_energy() is not None:
-                br = db.best_record()
-                logger.info(f"Best so far: E={br['energy']:.4f} eV  "
-                            f"rho={br['density']:.3f}  V={br['volume']:.0f} Å³  "
-                            f"(generation {br['cycle']}, {source_family(br['source'])})")
-            _save_cycle_report(db, cycle, cfg.output_dir)
-
-        logger.info("=" * 60)
-        logger.info("GENETIC ALGORITHM COMPLETE")
-        logger.info("=" * 60)
-        logger.info(f"Total structures evaluated: {len(db)}")
-        for op, s in source_stats(db.records).items():
-            best = f"{s['best_energy']:.4f}" if s['best_energy'] is not None else "-"
-            logger.info(f"  {op:<12} kept {s['kept']:>4}   best E={best} eV")
-        _save_final_report(db, cfg)
-        if db.records:
-            logger.info(f"Best CIF:   {db.best_record()['cif_path']}")
-    finally:
-        if pool is not None:
-            pool.close()
+    """Execute the genetic-algorithm search (cryal/search.py runs the loop)."""
+    run_search(cfg, GeneticSearch())

@@ -33,6 +33,7 @@ from ase import Atoms
 from ase.io import write
 
 from cryal import genetic as G
+from cryal import search as S
 from cryal.active_learning import CrystalDatabase, _record_result
 from cryal.backends.base import check_molecular_integrity, get_reference_bonds
 from cryal.config import GA_OPERATORS, Config, load_config
@@ -556,7 +557,7 @@ class TestHybrid(unittest.TestCase):
         cfg = run_config(self.tmp)
         sugg = [{'beta': 100.0, 'volume': 180.0}] * 3
         out = generate_structures(BENZENE, cfg, 8, suggestions=sugg, n_random=1)
-        families = [G.source_family(s['source']) for s in out]
+        families = [S.source_family(s['source']) for s in out]
         self.assertEqual(families.count('random'), 1)
         self.assertEqual(families.count('biased'), 4)
 
@@ -570,7 +571,7 @@ class TestHybrid(unittest.TestCase):
         ids = {r['id'] for r in recs}
         self.assertFalse(any(r['source'].startswith('ga_') for r in recs if r['cycle'] == 0))
         for cycle in (1, 2):
-            fams = [G.source_family(r['source']) for r in recs if r['cycle'] == cycle]
+            fams = [S.source_family(r['source']) for r in recs if r['cycle'] == cycle]
             bred = [f for f in fams if f in G.GA_OPERATORS]
             self.assertTrue(bred, fams)
             self.assertNotIn('immigrant', bred)
@@ -578,7 +579,7 @@ class TestHybrid(unittest.TestCase):
             # could not be made and were replaced by random structures.
             self.assertGreater(len(bred), fams.count('random'))
         for r in recs:
-            if G.source_family(r['source']) in G.GA_OPERATORS:
+            if S.source_family(r['source']) in G.GA_OPERATORS:
                 self.assertTrue(set(r['parents']) <= ids)
             else:
                 self.assertNotIn('parents', r)

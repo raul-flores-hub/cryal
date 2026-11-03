@@ -154,7 +154,8 @@ starts from PyXtal alone.
 | `cryal/sg_kernel.py` | hierarchical space-group kernel (group, Bravais lattice, crystal family; optional point group and centrosymmetry); not yet used by the GP |
 | `tools/sg_kernel_cv.py` | cross-validation on finished runs that chooses the space-group kernel, by a protocol fixed in its docstring |
 | `cryal/active_learning.py` | the active-learning loop |
-| `cryal/genetic.py` | the genetic algorithm, an alternative search (`general.algorithm = "ga"`) |
+| `cryal/search.py` | the loop shared by the searches other than BACH; pure random search |
+| `cryal/genetic.py` | the genetic algorithm (`general.algorithm = "ga"`), also used by BACH + GA |
 | `cryal/backends/uma.py` | UMA as a named backend, with its mandatory task |
 | `cryal/parallel.py` | distributing a cycle's candidates over several machines |
 | `cryal/_remote_worker.py` | what runs on a worker: one candidate, one verdict |
@@ -187,17 +188,34 @@ starts from PyXtal alone.
   independent of the GP and remains active. Omitting the key leaves the surrogate
   on, so inputs written before this option behave exactly as before.
 
-## Alternative search: a genetic algorithm
+## Alternative searches
 
-`general.algorithm = "ga"` replaces the GP and Expected Improvement with a
-genetic algorithm, and changes nothing else: the same generator, backend,
-relaxation, integrity check, parallel pool, database, stopping rule and
-resume. Generation 0 is generated exactly as BACH's cycle 0 is, and
-`[active_learning]` sets the budget of both, so the two are comparable from
-one input file with one key changed. (Not structure for structure, though:
-PyXtal places molecules with its own generator, seeded from the operating
-system rather than from `random_seed`, so no two runs — two BACH runs
-included — are guaranteed the same structures.)
+`general.algorithm` chooses how candidates are proposed. `"bach"`, the default,
+is the method of the article and keeps its own loop (`cryal/active_learning.py`).
+The alternatives share another (`cryal/search.py`) that is BACH's in everything
+but proposing: the same cycle 0, backend, relaxation, integrity check, parallel
+pool, database, stopping rule and resume, with `[active_learning]` setting the
+budget of all of them. So searches run from one input file with one key changed
+differ only in the way they propose, and each cycle's log — and
+`final_report.json` — shows what every source of candidates contributed.
+
+| `algorithm` | proposes |
+|---|---|
+| `"bach"` | half biased by the GP's Expected Improvement, half random, plus perturbed incumbents |
+| `"random"` | fresh random structures every cycle, nothing learnt: the baseline |
+| `"ga"` | children of the best distinct structures so far (below) |
+
+`"random"` is not `gp.enabled = false`: that still adds BACH's perturbed
+incumbents of the pool to every cycle. Pure random search learns nothing from
+what it has evaluated, which is what makes it the baseline that any guidance —
+the GP, the GA — has to beat to mean anything.
+
+### Genetic algorithm
+
+`general.algorithm = "ga"`. Generation 0 is generated as BACH's cycle 0 is —
+though not structure for structure: PyXtal places molecules with its own
+generator, seeded from the operating system rather than from `random_seed`,
+so no two runs, two BACH runs included, are guaranteed the same structures.
 
 ```toml
 [general]

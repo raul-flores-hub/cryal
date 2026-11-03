@@ -346,6 +346,9 @@ def _fraction(path, v):
     return v
 
 
+#: general.algorithm: BACH (active_learning.py), and the searches of search.py.
+ALGORITHMS = ("bach", "ga", "random")
+
 #: The variation operators of cryal/genetic.py, in the order it reports them.
 GA_OPERATORS = ("crossover", "strain", "rotation", "translation", "immigrant")
 #: The ones that breed from parents, which is all the BACH + GA hybrid uses.
@@ -381,7 +384,7 @@ _SCHEMA = {
         "output_dir":           ("output_dir", _str),
         "log_level":            ("log_level", _log_level),
         "resume":               ("resume", _bool),
-        "algorithm":            ("algorithm", _choice("bach", "ga")),
+        "algorithm":            ("algorithm", _choice(*ALGORITHMS)),
     },
     "backend": {
         "engine":               ("energy_backend", _str),
@@ -566,11 +569,11 @@ def load_config(filepath: str = "cryal.toml") -> Config:
     _apply(doc, cfg)
 
     if cfg.ga_fraction > 0:
-        if cfg.algorithm == "ga":
+        if cfg.algorithm != "bach":
             raise ValueError("active_learning.ga_fraction: mixes the genetic "
-                             "operators into BACH; with general.algorithm = "
-                             "\"ga\" every candidate is bred already. Set it "
-                             "to 0 or use algorithm = \"bach\"")
+                             "operators into BACH's cycles, and general.algorithm "
+                             f"= \"{cfg.algorithm}\" runs none. Set it to 0 or "
+                             "use algorithm = \"bach\"")
         if not any(cfg.ga_operators[k] > 0 for k in GA_BREEDING):
             raise ValueError("active_learning.ga_fraction: ga.operators gives "
                              "no weight to " + ", ".join(GA_BREEDING) + "; "
@@ -692,6 +695,9 @@ def print_config_summary(cfg: Config, logger=None):
                         if cfg.ga_operators[k] > 0)
         lines.append(f"  GA in BACH:      {cfg.ga_fraction:g} of the random part "
                      f"bred by GA ({ops}); population {cfg.ga_population_size}")
+    if cfg.algorithm == "random":
+        # In place of the GP line, which this run does not read.
+        lines[-1] = "  Search:          pure random search (no GP, no pool, no breeding)"
     if cfg.algorithm == "ga":
         # Said in place of the GP line, which a GA run does not read. A BACH
         # run prints exactly the summary it printed before the GA existed.
