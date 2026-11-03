@@ -41,6 +41,13 @@ python run_cryal.py [INPUT.txt]      # INPUT.txt is the default
 python run_cryal.py --resume         # continue an interrupted run
 ```
 
+A fixed `randomSeed` does not reproduce a run, not even on the same library
+versions. PyXtal places the molecules with a generator of its own, seeded from
+the operating system rather than from `randomSeed`, so the geometries differ
+from the first structure on; and because a placement that fails is retried with
+fresh draws from the seeded stream, the space groups and cells part ways too.
+Two runs configured identically are independent trajectories, not replicas.
+
 An interrupted run (power cut, walltime) resumes from `outputDir` without
 recomputing: the database is checkpointed after every evaluation, and the
 early-stopping state is reconstructed so a resumed run converges identically to

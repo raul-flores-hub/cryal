@@ -25,5 +25,5 @@ Usage:
     python run_cryal.py [INPUT.txt]
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__  = "CrYAL contributors"
