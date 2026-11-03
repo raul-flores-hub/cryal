@@ -24,7 +24,8 @@ physical prior is a plausible density window for organic crystals
 
 ## Requirements
 
-- Python 3.10+ with `numpy`, `scipy`, `scikit-learn`, `ase`, `pyxtal`
+- Python 3.10+ with `numpy`, `scipy`, `scikit-learn`, `ase`, `pyxtal`, and
+  `rdkit` (>= 2022.9) if you turn on the optional CH–π optimizer
 - **LAMMPS** built with the ML-IAP package and **Kokkos** (GPU), plus the
   `lammps` Python module importable by the interpreter that runs CrYAL
 - A **MACE-OFF** model exported for ML-IAP (e.g. `MACE-OFF23_small.model-mliap_lammps.pt`)
@@ -62,11 +63,34 @@ Two settings deserve attention:
 Optional CIF seeds can be placed in `Seeds/`; if the folder is empty the run
 starts from PyXtal alone.
 
+## The shipped example and the article
+
+`INPUT.txt` and `in_v3.lammps` are set up for benzene (`examples/benzene.xyz`,
+ideal D6h geometry), a small example that anyone can run. To search your own
+molecule, point `moleculeFile` at it, list its elements in `specOrder`, give the
+LAMMPS script one `mass` line per element and the same elements in `pair_coeff`,
+and scale `minCellAxis` to the molecule (5 Å suits benzene; a large planar
+molecule needs much more).
+
+`in_v3.lammps` is the relaxation protocol of the TMPA-An search reported in the
+accompanying article: a staged *NPT* anneal on a triclinic cell, then
+`box/relax` and a conjugate-gradient minimization. Its parameters were chosen
+for that system; they relax benzene, but they are not tuned for it. The other
+settings of `INPUT.txt` are those of that search too, except the ones that
+depend on the molecule. The exact inputs of the TMPA-An search (molecule, input
+file and LAMMPS script) are in its data deposit, DOI 10.5281/zenodo.22014958.
+
+Version 1.0.0 of CrYAL shipped a different `in_v3.lammps` (`box/relax`
+minimizations around a short *NPT* run), which is not the protocol of the
+article, and did not have `useGP`.
+
 ## Layout
 
 | path | role |
 |---|---|
 | `run_cryal.py` | entry point |
+| `INPUT.txt`, `in_v3.lammps` | configuration and relaxation protocol, set up for the example |
+| `examples/benzene.xyz` | the example molecule |
 | `cryal/config.py` | `INPUT.txt` parser → configuration dataclass |
 | `cryal/structure_gen.py` | symmetry-aware generation at a target volume |
 | `cryal/lammps_runner.py` | LAMMPS/MACE-OFF relaxation and energy evaluation |

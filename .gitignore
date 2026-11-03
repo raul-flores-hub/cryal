@@ -30,3 +30,7 @@ venv/
 .idea/
 *.swp
 .DS_Store
+
+# The molecule under study is the user's own input, not part of the tool.
+# The repository ships only examples/benzene.xyz as a runnable example.
+molecule.xyz

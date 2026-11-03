@@ -38,7 +38,7 @@ def write_input(body: str) -> str:
 
 MINIMAL = """
 % GENERAL
-moleculeFile = molecule.xyz
+moleculeFile = examples/benzene.xyz
 Z = 4
 """
 
