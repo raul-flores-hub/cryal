@@ -96,6 +96,9 @@ one that was never interrupted.
 
 ## Configuration
 
+**[docs/MANUAL.md](docs/MANUAL.md)** is the input manual: how to set up each
+search algorithm, and every option, its type, its default and what it does.
+
 `cryal.toml` is [TOML](https://toml.io), read with Python's own `tomllib`. The
 tables are `[general]`, `[backend]` (with `[backend.lammps]`, `[backend.ase]`
 and `[backend.uma]`), `[relaxation]`, `[active_learning]`, `[space_groups]`,
@@ -143,6 +146,7 @@ starts from PyXtal alone.
 
 | path | role |
 |---|---|
+| `docs/MANUAL.md` | the input manual: every algorithm and every option |
 | `run_cryal.py` | entry point for a checkout (wrapper over `cryal/cli.py`) |
 | `cryal/cli.py` | the command line, installed as `cryal` |
 | `cryal/config.py` | `cryal.toml` loader and schema → configuration dataclass |
