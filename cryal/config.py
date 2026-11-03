@@ -141,6 +141,13 @@ class Config:
     ei_xi:               float = 0.01
     num_ei_candidates:   int   = 50000
     num_ei_suggestions:  int   = 20
+    # Variants of the Bayesian optimization (cryal/gp_model.py). The defaults
+    # are the published method: Expected Improvement, and a batch of its best
+    # candidates kept apart by a fixed distance.
+    gp_acquisition:      str   = "ei"      # "ei", "ucb" or "thompson"
+    ucb_kappa:           float = 2.0       # "ucb": exploration weight on sigma
+    gp_batch:            str   = "diverse" # "diverse" or "believer" (ei, ucb)
+    gp_pool:             int   = 2000      # candidates "thompson"/"believer" work on
 
     # --- GENETIC ALGORITHM (algorithm = "ga") ---
     # Read only by cryal/genetic.py. The budget is not here: a GA run spends
@@ -490,6 +497,10 @@ _SCHEMA = {
         "ei_xi":                ("ei_xi", _float),
         "ei_candidates":        ("num_ei_candidates", _int),
         "ei_suggestions":       ("num_ei_suggestions", _int),
+        "acquisition":          ("gp_acquisition", _choice("ei", "ucb", "thompson")),
+        "ucb_kappa":            ("ucb_kappa", _nonneg),
+        "batch":                ("gp_batch", _choice("diverse", "believer")),
+        "pool":                 ("gp_pool", _positive_int),
     },
     "ga": {
         "population_size":      ("ga_population_size", _positive_int),
@@ -634,6 +645,11 @@ def load_config(filepath: str = "cryal.toml") -> Config:
     cfg = Config()
     _apply(doc, cfg)
 
+    if cfg.gp_acquisition == "thompson" and cfg.gp_batch == "believer":
+        raise ValueError('gp.batch = "believer" applies to gp.acquisition = "ei" or '
+                         '"ucb"; Thompson sampling makes its batch from separate '
+                         'posterior draws, so leave gp.batch out')
+
     if cfg.ga_fraction > 0:
         if cfg.algorithm != "bach":
             raise ValueError("active_learning.ga_fraction: mixes the genetic "
@@ -755,6 +771,15 @@ def print_config_summary(cfg: Config, logger=None):
         f"  GP surrogate:    {'ON' if cfg.use_gp else 'OFF — no EI bias (ablation control)'}"
         + (" + anisotropy feature" if cfg.use_gp and cfg.gp_anisotropy else ""),
     ]
+    if cfg.algorithm == "bach" and cfg.use_gp and (cfg.gp_acquisition != "ei"
+                                                   or cfg.gp_batch != "diverse"):
+        # Only when a variant is chosen: the published run prints as it did.
+        what = {"ei": "Expected Improvement", "ucb": f"UCB (kappa {cfg.ucb_kappa:g})",
+                "thompson": f"Thompson sampling (pool {cfg.gp_pool})"}[cfg.gp_acquisition]
+        if cfg.gp_acquisition != "thompson":
+            what += (f", kriging-believer batch (pool {cfg.gp_pool})"
+                     if cfg.gp_batch == "believer" else ", diverse batch")
+        lines.append(f"  Acquisition:     {what}")
     if cfg.algorithm == "bach" and cfg.ga_fraction > 0:
         # Only for a hybrid run: a run without it prints what it always did.
         ops = ", ".join(f"{k} {cfg.ga_operators[k]:g}" for k in GA_BREEDING

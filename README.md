@@ -192,6 +192,35 @@ starts from PyXtal alone.
   independent of the GP and remains active. Omitting the key leaves the surrogate
   on, so inputs written before this option behave exactly as before.
 
+## Variants of the Bayesian optimization
+
+BACH's acquisition can be changed in `[gp]`, the rest of the loop staying as it
+is. Left out, the keys are the method of the article — Expected Improvement over
+the candidates, and a batch of its best ones kept 0.5 apart in scaled feature
+space — and a test holds the default path to that function, suggestion for
+suggestion and random draw for random draw.
+
+| key | value | what it does |
+|---|---|---|
+| `acquisition` | `"ei"` (default) | Expected Improvement |
+| | `"ucb"` | lower confidence bound μ − κσ, κ = `ucb_kappa` (0 exploits, large explores) |
+| | `"thompson"` | Thompson sampling: each suggestion the minimum of one draw from the GP posterior, over `pool` candidates |
+| `batch` | `"diverse"` (default) | the best candidates, at least 0.5 apart |
+| | `"believer"` | kriging believer: picked one at a time, each believed at its prediction before the next is scored (with `"ei"` or `"ucb"`) |
+
+```toml
+[gp]
+acquisition = "ucb"
+ucb_kappa   = 2.0
+batch       = "believer"
+```
+
+The believer and Thompson sampling both make a batch spread out for a reason
+the model can state — a believed point has no uncertainty left, a posterior draw
+is one plausible landscape — where the published batch keeps its points apart by
+a fixed distance. Suggestions are saved per cycle with the acquisition that
+made them.
+
 ## Alternative searches
 
 `general.algorithm` chooses how candidates are proposed. `"bach"`, the default,

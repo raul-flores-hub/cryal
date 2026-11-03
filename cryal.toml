@@ -158,6 +158,14 @@ n_restarts     = 5                    # optimizer restarts for kernel hyperparam
 ei_xi          = 0.01                 # exploration parameter (higher = more exploration)
 ei_candidates  = 50000                # random candidates evaluated for EI maximization
 ei_suggestions = 20                   # top EI candidates used to bias next generation
+# Variants of the Bayesian optimization. Left out, these are the published
+# method: Expected Improvement, the best candidates kept 0.5 apart.
+# acquisition = "ei"                  # "ei", "ucb" (mu - kappa sigma) or "thompson"
+#                                     # (each suggestion the minimum of one posterior draw)
+# ucb_kappa   = 2.0                   # "ucb": 0 = lowest predicted energy, larger = explore
+# batch       = "diverse"             # "diverse" or "believer": kriging believer, each pick
+#                                     # believed at its prediction before the next (ei, ucb)
+# pool        = 2000                  # candidates "thompson" and "believer" work on
 
 [ga]
 # Read when general.algorithm = "ga", and by the BACH + GA hybrid
