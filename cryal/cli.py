@@ -132,6 +132,8 @@ def main(argv=None):
             from .basin_hopping import run
         elif cfg.algorithm == "pso":
             from .pso import run
+        elif cfg.algorithm == "cmaes":
+            from .cmaes import run
         else:
             from .active_learning import run
         run(cfg)

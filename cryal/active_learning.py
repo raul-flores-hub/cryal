@@ -238,6 +238,9 @@ def _record_result(s, relaxed, energy, cfg, cycle: int, step_name: str,
         record['parents'] = list(s['parents'])
     if 'walker' in s:
         record['walker'] = int(s['walker'])
+    # A CMA-ES sample: its instance and the vector drawn (cryal/cmaes.py).
+    if 'cma' in s:
+        record['cma'] = s['cma']
     # A PSO particle and the velocity that moved it here (cryal/pso.py).
     if 'particle' in s:
         record['particle'] = int(s['particle'])

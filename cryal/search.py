@@ -65,13 +65,14 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 #: The families of source, in the order the reports list them.
-FAMILIES = ("biased", "random", "perturb", "seed") + GA_OPERATORS + ("hop", "pso", "other")
+FAMILIES = ("biased", "random", "perturb", "seed") + GA_OPERATORS + ("hop", "pso", "cmaes",
+                                                                    "other")
 
 
 def source_family(source: str) -> str:
     """
     Where a record came from, from its source: a GA operator, a basin-hopping
-    move ('hop'), a particle-swarm step ('pso'), or for the generator's structures 'biased' (toward a GP
+    move ('hop'), a particle-swarm step ('pso'), a CMA-ES sample ('cmaes'), or for the generator's structures 'biased' (toward a GP
     suggestion), 'random', 'perturb' (a perturbed seed or, in BACH from cycle
     1 on, a perturbed incumbent of the pool) and 'seed'.
     """
@@ -81,8 +82,8 @@ def source_family(source: str) -> str:
                 return op
     if source.startswith('hop_'):
         return 'hop'
-    if source == 'pso':
-        return 'pso'
+    if source in ('pso', 'cmaes'):
+        return source
     for family in ("biased", "random", "perturb", "seed"):
         if source.startswith(family):
             return family

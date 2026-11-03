@@ -194,6 +194,15 @@ class Config:
     pso_max_shift:       float = 1.0     # Å per cycle, per molecular centre
     pso_max_turn:        float = 30.0    # degrees per cycle, per molecule
 
+    # --- CMA-ES (algorithm = "cmaes") ---
+    # Read only by cryal/cmaes.py; lambda is structures_per_cycle.
+    cma_sigma:           float = 1.0     # initial step size, in the scaled units below
+    cma_strain_scale:    float = 0.05    # one unit of the cell's coordinates: 5 % strain
+    cma_shift_scale:     float = 0.5     # one unit of a centre: 0.5 Å
+    cma_turn_scale:      float = 10.0    # one unit of an orientation: 10 degrees
+    cma_restart_sigma:   float = 0.05    # restart when the distribution has shrunk below this
+    cma_stall:           int   = 5       # or when the best has not improved for this many
+
     # --- CHPI OPTIMIZER ---
     use_chpi_optimizer:  bool  = True
     d_min:               float = 2.6
@@ -383,7 +392,7 @@ def _fraction(path, v):
 
 
 #: general.algorithm: BACH (active_learning.py), and the searches of search.py.
-ALGORITHMS = ("bach", "ga", "random", "basin_hopping", "pso")
+ALGORITHMS = ("bach", "ga", "random", "basin_hopping", "pso", "cmaes")
 
 #: The variation operators of cryal/genetic.py, in the order it reports them.
 GA_OPERATORS = ("crossover", "strain", "rotation", "translation", "immigrant")
@@ -533,6 +542,14 @@ _SCHEMA = {
         "max_strain":           ("pso_max_strain", _nonneg),
         "max_shift":            ("pso_max_shift", _nonneg),
         "max_turn":             ("pso_max_turn", _nonneg),
+    },
+    "cmaes": {
+        "sigma":                ("cma_sigma", _nonneg),
+        "strain_scale":         ("cma_strain_scale", _nonneg),
+        "shift_scale":          ("cma_shift_scale", _nonneg),
+        "turn_scale":           ("cma_turn_scale", _nonneg),
+        "restart_sigma":        ("cma_restart_sigma", _nonneg),
+        "stall":                ("cma_stall", _positive_int),
     },
     "chpi": {
         "enabled":              ("use_chpi_optimizer", _bool),
@@ -789,6 +806,10 @@ def print_config_summary(cfg: Config, logger=None):
     if cfg.algorithm == "random":
         # In place of the GP line, which this run does not read.
         lines[-1] = "  Search:          pure random search (no GP, no pool, no breeding)"
+    if cfg.algorithm == "cmaes":
+        lines[-1] = (f"  Search:          CMA-ES — lambda {cfg.structures_per_cycle}, "
+                     f"sigma {cfg.cma_sigma:g} (strain {cfg.cma_strain_scale:g}, shift "
+                     f"{cfg.cma_shift_scale:g} Å, turn {cfg.cma_turn_scale:g}°)")
     if cfg.algorithm == "pso":
         lines[-1] = (f"  Search:          particle swarm — {cfg.pso_random_fraction:g} of each "
                      f"cycle random, inertia {cfg.pso_inertia[0]:g} → "

@@ -158,6 +158,7 @@ starts from PyXtal alone.
 | `cryal/search.py` | the loop shared by the searches other than BACH; pure random search |
 | `cryal/basin_hopping.py` | basin hopping (`general.algorithm = "basin_hopping"`) |
 | `cryal/pso.py` | particle swarm (`general.algorithm = "pso"`) |
+| `cryal/cmaes.py` | CMA-ES (`general.algorithm = "cmaes"`) |
 | `cryal/fingerprint.py` | structural fingerprint that tells two minima apart (`[duplicates]`) |
 | `cryal/genetic.py` | the genetic algorithm (`general.algorithm = "ga"`), also used by BACH + GA |
 | `cryal/backends/uma.py` | UMA as a named backend, with its mandatory task |
@@ -239,6 +240,7 @@ differ only in the way they propose, and each cycle's log — and
 | `"ga"` | children of the best distinct structures so far (below) |
 | `"basin_hopping"` | Metropolis walks from minimum to minimum (below) |
 | `"pso"` | a particle swarm, CALYPSO-like (below) |
+| `"cmaes"` | the covariance matrix adaptation evolution strategy (below) |
 
 `"random"` is not `gp.enabled = false`: that still adds BACH's perturbed
 incumbents of the pool to every cycle. Pure random search learns nothing from
@@ -350,6 +352,35 @@ across the two (over origin shifts too), and orientations are compared up to the
 molecule's own symmetry — benzene turned 60° about its axis is benzene not
 turned at all. Each record of a step names its `particle` and the `velocity`
 that moved it, so a resumed run carries the swarm on where it was.
+
+### CMA-ES
+
+`general.algorithm = "cmaes"` is the standard (μ/μ_w, λ)-CMA-ES of Hansen's
+tutorial, with its default parameters: each cycle one generation of
+λ = `structures_per_cycle` samples from a multivariate normal, whose mean,
+step size and covariance adapt toward what ranked best — it learns which
+combinations of cell, positions and orientations the energy is sensitive to.
+A sample is a crystal around a starting structure, as a vector (the cell's
+six coordinates, kept always valid; each molecular centre; each molecule's
+turn), scaled so one unit is 5 % strain, 0.5 Å or 10°; it is repaired as GA
+children are and relaxed, and ranked by its relaxed energy. An instance
+starts from cycle 0's best and restarts from the next distinct structure when
+it has converged or stalled.
+
+```toml
+[general]
+algorithm = "cmaes"
+
+[cmaes]
+sigma = 1.0
+stall = 5
+```
+
+CMA-ES needs generations to learn its covariance — with Z = 4 the space has 30
+dimensions — so more cycles of fewer structures suit it better than the
+default budget, at the same cost. Every sample's record keeps the vector drawn,
+and the strategy's whole state is rebuilt from the database by replaying its
+updates, exactly, on resume.
 
 ### Telling structures apart
 

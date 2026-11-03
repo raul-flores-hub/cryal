@@ -29,6 +29,7 @@ algorithm   = "bach"                  # the search:
                                       #   "random"  pure random search: the baseline, no learning
                                       #   "basin_hopping"  Metropolis walks between minima, see [basin_hopping]
                                       #   "pso"     particle swarm (CALYPSO-like), see [pso]
+                                      #   "cmaes"   covariance matrix adaptation ES, see [cmaes]
 
 [backend]
 # Which engine relaxes each candidate and returns its energy.
@@ -235,6 +236,20 @@ c2              = 2.0                 # pull toward the swarm's best
 max_strain      = 0.10                # per step, Frobenius norm of the cell strain
 max_shift       = 1.0                 # Å per step, per molecular centre
 max_turn        = 30.0                # degrees per step, per molecule
+
+[cmaes]
+# Only read when general.algorithm = "cmaes". One cycle is one generation of
+# lambda = structures_per_cycle samples; cycle 0 is BACH's. The space is the
+# crystal around a starting structure (cell, molecular centres, orientations:
+# 6 + 6 Z dimensions), each block in scaled units below. CMA-ES learns its
+# covariance over generations: more cycles of fewer structures suit it better
+# than the default budget, at the same cost.
+sigma         = 1.0                   # initial step size, in the scaled units
+strain_scale  = 0.05                  # one unit of cell = 5 % strain
+shift_scale   = 0.5                   # one unit of a molecular centre = 0.5 Å
+turn_scale    = 10.0                  # one unit of an orientation = 10 degrees
+restart_sigma = 0.05                  # restart once the distribution shrinks below this
+stall         = 5                     # ... or the best has not improved for this many generations
 
 [chpi]
 # CH-pi geometric optimizer: adjusts molecular positions to maximize
