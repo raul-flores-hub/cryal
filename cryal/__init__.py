@@ -26,7 +26,8 @@ Usage:
     python run_cryal.py [cryal.toml] # from a checkout
 """
 
-# 1.0.0 is the released version archived on Zenodo (DOI 10.5281/zenodo.21896733)
-# and cited by the article; this is the unreleased work that follows it.
-__version__ = "1.1.0.dev0"
+# 1.0.0 is the version archived on Zenodo (DOI 10.5281/zenodo.21896733); 1.1.0,
+# on the release-1.1 branch, is the version of the corrected article. This is
+# the unreleased work that follows it.
+__version__ = "1.2.0.dev0"
 __author__  = "Raúl Rodolfo Flores Mena"

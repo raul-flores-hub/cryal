@@ -90,7 +90,7 @@ species = ["C", "H"]                  # element order for LAMMPS atom types; mus
 # relax_cell = true                   # relax cell and positions (FrechetCellFilter)
 
 [active_learning]
-cycles                = 10            # number of AL cycles after initialization
+cycles                = 20            # number of AL cycles after initialization (20 in the article's search)
 initial_structures    = 100           # structures generated in cycle 0
 structures_per_cycle  = 50            # structures generated per AL cycle
 pool_size             = 20            # best structures kept as seeds between cycles
@@ -254,8 +254,9 @@ stall         = 5                     # ... or the best has not improved for thi
 [chpi]
 # CH-pi geometric optimizer: adjusts molecular positions to maximize
 # H...aromatic centroid contacts in the d_range range.
-# Set enabled = false to skip this step entirely.
-enabled               = true
+# Off, as in the search reported in the article: an ablation showed it does
+# not improve the search. Note that the default, if this key is left out, is on.
+enabled               = false
 d_range               = [2.6, 3.5]    # Å — equilibrium range [low, high]
 d_target              = 3.0           # Å — target H...centroid distance
 d_search              = 6.0           # Å — search radius for contacts

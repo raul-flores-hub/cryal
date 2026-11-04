@@ -74,10 +74,14 @@ species = ["C", "H", "N", "O"] # same elements, same order as pair_coeff in the 
 
 [cell]
 min_axis = 6.0                 # Å; scale with your molecule (§6, [cell])
+
+[chpi]
+enabled = false                # off, as in the article; left out, it is on
 ```
 
-That runs BACH, the published method, with the LAMMPS/MACE-OFF23 backend. Two
-things deserve thought for any new molecule: `cell.min_axis` (the default,
+That runs BACH, the published method, with the LAMMPS/MACE-OFF23 backend and
+the relaxation protocol of `in_v3.lammps`. Two things deserve thought for any
+new molecule: `cell.min_axis` (the default,
 9 Å, suits a large molecule and rejects every cell of a small one), and the
 density window `volume.density` (0.8–1.6 g/cm³ suits most organic crystals).
 
@@ -460,7 +464,7 @@ databases built with different backends, and keep the backend when resuming.
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `input` | string | `"in_v3.lammps"` | LAMMPS input script for the relaxation |
+| `input` | string | `"in_v3.lammps"` | LAMMPS input script for the relaxation. The shipped one is the article's protocol: a staged NPT anneal on a triclinic cell (20 K at 3000 bar, then 20 → 10 K and 10 K at 1 bar; 0.4 fs, 12 000 steps), then `box/relax` and conjugate gradient |
 | `command` | string | `"lmp"` | how to start LAMMPS. MACE needs the Kokkos GPU build: e.g. `"lmp -k on g 1 -sf kk -pk kokkos newton on neigh half"` (that is the example's value) |
 | `species` | list of strings | `["C", "H", "O", "N"]` | element order of the LAMMPS atom types; must match `pair_coeff` and `mass` in the script. (example: `["C", "H"]`) |
 
@@ -497,7 +501,7 @@ LAMMPS script. With `[parallel]`, its local slots are limited to one.
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `cycles` | integer | `10` | cycles (generations) after cycle 0 |
+| `cycles` | integer | `10` | cycles (generations) after cycle 0. **(example: `20`, the article's search)** |
 | `initial_structures` | integer | `100` | random structures in cycle 0 |
 | `structures_per_cycle` | integer | `50` | candidates per cycle; λ for CMA-ES |
 | `pool_size` | integer | `20` | BACH only: best structures whose perturbed copies join each cycle |
@@ -622,13 +626,14 @@ every two structures of equal energy, and the threshold goes in the gap.
 
 A greedy geometric step, applied to every candidate before relaxation, that
 moves molecules to bring H atoms to `d_target` from aromatic ring centroids.
-Needs RDKit. An ablation found that it does not improve the search, and
-production runs leave it off. **The default is `true`** (and so is the
-example's), so set `enabled = false` explicitly for a production run.
+Needs RDKit. An ablation found that it does not improve the search, and the
+article's search ran with it off, as the shipped example does. **But the
+default, when the key is left out, is `true`**: write `enabled = false` in your
+own input.
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `enabled` | boolean | `true` | run the optimizer |
+| `enabled` | boolean | `true` | run the optimizer. **(example: `false`, as in the article's search)** |
 | `d_range` | `[low, high]` | `[2.6, 3.5]` | Å, H···centroid distances counted as a contact |
 | `d_target` | number | `3.0` | Å, the distance a move aims for |
 | `d_search` | number | `5.0` | Å, search radius when listing contacts. **(example: `6.0`)** |

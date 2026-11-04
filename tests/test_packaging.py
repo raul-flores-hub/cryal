@@ -64,15 +64,18 @@ class TestProjectMetadata(unittest.TestCase):
         self.assertEqual(attr, "cryal.__version__")
         self.assertRegex(cryal.__version__, r"^\d+\.\d+\.\d+")
 
-    def test_the_development_version_is_ahead_of_the_archived_release(self):
-        self.assertNotEqual(cryal.__version__, "1.0.0")
+    def test_the_development_version_is_ahead_of_the_last_release(self):
+        released = (1, 1, 0)
+        mine = tuple(int(x) for x in cryal.__version__.split(".")[:3])
+        self.assertGreater(mine, released)
 
-    def test_citation_still_describes_the_archived_release(self):
-        # The article cites version 1.0.0 and its Zenodo DOI. This file must
-        # keep pointing there until a new release is actually archived.
+    def test_citation_describes_the_last_release(self):
+        # The corrected article cites release 1.1.0 (branch release-1.1, and
+        # main). This file must keep describing it until a new release is
+        # actually made, whatever the development version says.
         with open(os.path.join(ROOT, "CITATION.cff")) as f:
             citation = f.read()
-        self.assertIn("version: 1.0.0", citation)
+        self.assertIn("version: 1.1.0", citation)
         self.assertIn("10.5281/zenodo.21896733", citation)
 
     def test_declared_files_exist(self):

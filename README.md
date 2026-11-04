@@ -142,6 +142,34 @@ Two settings deserve attention:
 Optional CIF seeds can be placed in `Seeds/`; if the folder is empty the run
 starts from PyXtal alone.
 
+## The shipped example and the article
+
+`cryal.toml` and `in_v3.lammps` are set up for benzene (`examples/benzene.xyz`,
+ideal D6h geometry), a small example that anyone can run. To search your own
+molecule, point `general.molecule` at it, list its elements in
+`backend.lammps.species`, give the LAMMPS script one `mass` line per element and
+the same elements in `pair_coeff`, and scale `cell.min_axis` to the molecule
+(5 Å suits benzene; a large planar molecule needs much more).
+
+`in_v3.lammps` is the relaxation protocol of the TMPA-An search reported in the
+accompanying article: a staged *NPT* anneal on a triclinic cell (20 K at
+3000 bar, then 20 → 10 K and 10 K at 1 bar; 0.4 fs, 12 000 steps), then
+`box/relax` and a conjugate-gradient minimization. Its parameters were chosen
+for that system; they relax benzene, but they are not tuned for it. The other
+settings of `cryal.toml` are those of that search too — BACH, 20 cycles, the
+CH–π optimizer off — except the ones that depend on the molecule. The exact
+inputs of the TMPA-An search (molecule, input file and LAMMPS script) are in its
+data deposit, DOI 10.5281/zenodo.22014958.
+
+**Versions.** 1.0.0 (Zenodo, DOI 10.5281/zenodo.21896733) shipped a different
+`in_v3.lammps` — `box/relax` minimizations around a short *NPT* run — which is
+not the protocol of the article, and did not have the GP ablation. 1.1.0, on
+the `release-1.1` branch and `main`, is the version of the corrected article:
+the article's protocol, benzene as the example, and the old `INPUT.txt` input
+format. This branch is the development that follows it: `cryal.toml`, energy
+backends, distributed relaxations and the alternative searches; a 1.1.0
+`INPUT.txt` converts with `cryal convert INPUT.txt cryal.toml`.
+
 ## Layout
 
 | path | role |
@@ -187,7 +215,9 @@ starts from PyXtal alone.
   group and target volume, because they are not independent once symmetry and
   volume are fixed, and constraining them all over-determines the packing.
 - **The CH–π optimizer is off by design in production runs.** An ablation showed
-  it does not improve the search. It remains available via `chpi.enabled`.
+  it does not improve the search. It remains available via `chpi.enabled`, and
+  the shipped `cryal.toml` sets it to `false` — but a key left out takes its
+  default, which is `true`, so an input of your own should say `false` too.
 - **The Bayesian guidance can be ablated.** Setting `gp.enabled = false` runs the same
   workflow with the surrogate switched off: candidates are generated without the
   Expected-Improvement bias, while the generator, the potential, the relaxation
