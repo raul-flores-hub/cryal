@@ -1,8 +1,9 @@
 # Relaxation protocol of the BACH search reported in the accompanying article:
 # a staged NPT anneal on a triclinic cell (20 K at 3000 bar, then 20 -> 10 K and
-# 10 K at 1 bar; 0.4 fs timestep, 12000 steps in all), an isotropic box/relax at
-# 1 bar and a conjugate-gradient minimization. CrYAL writes structure.data and
-# reads energy.dat and minimized.data.
+# 10 K at 1 bar; 0.4 fs timestep, 12000 steps in all), then a conjugate-gradient
+# minimization in which the cell is also relaxed isotropically at 1 bar
+# (box/relax is not a separate step: it adds the cell to the minimizer).
+# CrYAL writes structure.data and reads energy.dat and minimized.data.
 units           metal
 boundary        p p p
 atom_style      atomic

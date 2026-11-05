@@ -80,8 +80,9 @@ and scale `minCellAxis` to the molecule (5 Å suits benzene; a large planar
 molecule needs much more).
 
 `in_v3.lammps` is the relaxation protocol of the TMPA-An search reported in the
-accompanying article: a staged *NPT* anneal on a triclinic cell, then
-`box/relax` and a conjugate-gradient minimization. Its parameters were chosen
+accompanying article: a staged *NPT* anneal on a triclinic cell, then a
+conjugate-gradient minimization in which the cell is also relaxed isotropically
+at 1 bar (`fix box/relax iso`). Its parameters were chosen
 for that system; they relax benzene, but they are not tuned for it. The other
 settings of `INPUT.txt` are those of that search too, except the ones that
 depend on the molecule. The exact inputs of the TMPA-An search (molecule, input
