@@ -17,6 +17,11 @@ gp_model.py — Gaussian Process surrogate model and Expected Improvement.
 
 The GP learns the mapping:
   features = [a, b, c, alpha, beta, gamma, density]  →  energy (eV)
+With gp.anisotropy = true an eighth feature is appended: the anisotropy
+(longest / shortest cell axis). The GP already sees a, b and c, but an ARD
+kernel models one length scale per axis and represents a ratio between axes
+poorly; the explicit feature lets it learn "elongated cells are favoured"
+directly, and the generator then reproduces the suggested anisotropy.
 
 Training uses relative energies (E - E_min) to improve numerical conditioning.
 The kernel is Matérn(nu=2.5) × ConstantKernel + WhiteKernel.
@@ -50,24 +55,42 @@ warnings.filterwarnings('ignore')
 # ---------------------------------------------------------------------------
 
 FEATURE_NAMES = ['a', 'b', 'c', 'alpha', 'beta', 'gamma', 'density']
+ANISOTROPY_NAME = 'anisotropy'
 
 
-def features_from_record(record: dict) -> np.ndarray:
+def anisotropy(a: float, b: float, c: float) -> float:
+    """Longest over shortest cell axis (>= 1)."""
+    return max(a, b, c) / min(a, b, c)
+
+
+def feature_names(use_anisotropy: bool = False) -> List[str]:
+    return FEATURE_NAMES + ([ANISOTROPY_NAME] if use_anisotropy else [])
+
+
+def features_from_record(record: dict, use_anisotropy: bool = False) -> np.ndarray:
     """
-    Extract the 7-dimensional feature vector from a database record.
+    Extract the feature vector from a database record: 7 features, or 8 with
+    the anisotropy appended.
     record must have keys: a, b, c, alpha, beta, gamma, density.
     """
-    return np.array([record['a'], record['b'], record['c'],
-                     record['alpha'], record['beta'], record['gamma'],
-                     record['density']])
+    x = [record['a'], record['b'], record['c'],
+         record['alpha'], record['beta'], record['gamma'],
+         record['density']]
+    if use_anisotropy:
+        x.append(anisotropy(record['a'], record['b'], record['c']))
+    return np.array(x)
 
 
-def features_from_atoms(atoms, Z: int, mol_weight: float) -> np.ndarray:
+def features_from_atoms(atoms, Z: int, mol_weight: float,
+                        use_anisotropy: bool = False) -> np.ndarray:
     """Extract features directly from an ASE Atoms object."""
     from .utils import compute_density
     cp = atoms.cell.cellpar()
     rho = compute_density(atoms, Z, mol_weight)
-    return np.array([cp[0], cp[1], cp[2], cp[3], cp[4], cp[5], rho])
+    x = [cp[0], cp[1], cp[2], cp[3], cp[4], cp[5], rho]
+    if use_anisotropy:
+        x.append(anisotropy(cp[0], cp[1], cp[2]))
+    return np.array(x)
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +110,12 @@ class GPSurrogate:
     n_train   : number of training points
     """
 
-    def __init__(self, kernel_type: str = "matern25", n_restarts: int = 5):
+    def __init__(self, kernel_type: str = "matern25", n_restarts: int = 5,
+                 use_anisotropy: bool = False):
         self.kernel_type = kernel_type
         self.n_restarts  = n_restarts
+        self.use_anisotropy = use_anisotropy
+        self.n_features  = len(feature_names(use_anisotropy))
         self.gp          = None
         self.scaler_X    = StandardScaler()
         self.scaler_y    = StandardScaler()
@@ -99,10 +125,10 @@ class GPSurrogate:
 
     def _build_kernel(self):
         if self.kernel_type == "rbf":
-            base = RBF(length_scale=np.ones(7),
+            base = RBF(length_scale=np.ones(self.n_features),
                        length_scale_bounds=(1e-2, 1e2))
         else:   # matern25 (default, more robust)
-            base = Matern(length_scale=np.ones(7),
+            base = Matern(length_scale=np.ones(self.n_features),
                           length_scale_bounds=(1e-2, 1e2), nu=2.5)
         return (ConstantKernel(1.0, (1e-3, 1e3)) * base
                 + WhiteKernel(noise_level=1e-2, noise_level_bounds=(1e-6, 1e1)))
@@ -115,7 +141,7 @@ class GPSurrogate:
         if len(records) < 5:
             raise ValueError(f"Need at least 5 records to train GP; got {len(records)}")
 
-        X_raw = np.array([features_from_record(r) for r in records])
+        X_raw = np.array([features_from_record(r, self.use_anisotropy) for r in records])
         y_raw = np.array([r['energy'] for r in records])
 
         self.e_min = y_raw.min()
@@ -138,7 +164,7 @@ class GPSurrogate:
         try:
             self._length_scales = self.gp.kernel_.k1.k2.length_scale
             if np.isscalar(self._length_scales):
-                self._length_scales = np.full(7, self._length_scales)
+                self._length_scales = np.full(self.n_features, self._length_scales)
         except Exception:
             self._length_scales = None
 
@@ -164,7 +190,7 @@ class GPSurrogate:
             return None
         imp = 1.0 / self._length_scales
         imp /= imp.sum()
-        return {name: float(v) for name, v in zip(FEATURE_NAMES, imp)}
+        return {name: float(v) for name, v in zip(feature_names(self.use_anisotropy), imp)}
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +221,32 @@ def expected_improvement(mu: np.ndarray, sigma: np.ndarray,
 # Suggestion generation
 # ---------------------------------------------------------------------------
 
+def lower_confidence_bound(mu: np.ndarray, sigma: np.ndarray,
+                           kappa: float = 2.0) -> np.ndarray:
+    """
+    UCB for minimization, as a score to maximize: kappa * sigma - mu, the
+    negated lower confidence bound mu - kappa * sigma. kappa = 0 is pure
+    exploitation (lowest predicted energy), a large kappa pure exploration.
+    """
+    return kappa * sigma - mu
+
+
+def _acquisition(cfg) -> str:
+    return getattr(cfg, "gp_acquisition", "ei")
+
+
+def _score(mu, std, best_y, cfg):
+    """The acquisition score, larger is better."""
+    if _acquisition(cfg) == "ucb":
+        return lower_confidence_bound(mu, std, cfg.ucb_kappa)
+    return expected_improvement(mu, std, best_y, xi=cfg.ei_xi)
+
+
 def maximize_ei(gp: GPSurrogate, database_records: List[dict],
                 cfg, rng: np.random.Generator) -> List[dict]:
     """
-    Sample random candidate configurations and return those with highest EI.
+    Sample random candidate configurations and return those the acquisition
+    function ranks highest.
 
     The candidate space covers:
       a, b, c : [min_cell_axis, 35] Å
@@ -206,8 +254,17 @@ def maximize_ei(gp: GPSurrogate, database_records: List[dict],
       beta : [cfg.beta_min, cfg.beta_max]°
       density : [density_min, density_max + margin] g/cm³
 
+    gp.acquisition picks the function — "ei" (Expected Improvement, the
+    published method), "ucb" (lower confidence bound) or "thompson"
+    (Thompson sampling) — and gp.batch how a batch of num_ei_suggestions is
+    taken from it: "diverse", the best ones no closer than 0.5 to each other
+    in scaled feature space (the published method), or "believer" (kriging
+    believer). With both left at their defaults, this is the function the
+    article ran, draw for draw.
+
     Returns a list of suggestion dicts with keys:
-      a, b, c, alpha, beta, gamma, density, volume, E_pred, E_std, EI
+      a, b, c, alpha, beta, gamma, density, volume, E_pred, E_std, and EI —
+      or, for another acquisition, 'acquisition' and its 'score'.
     """
     best_y = min(r['energy'] for r in database_records)
     NA     = 6.02214076e23
@@ -226,6 +283,9 @@ def maximize_ei(gp: GPSurrogate, database_records: List[dict],
                     cfg.density_max * 1.1, n),
     ])
 
+    if gp.use_anisotropy:
+        C = np.column_stack([C, C[:, :3].max(axis=1) / C[:, :3].min(axis=1)])
+
     # Filter: reject volumes inconsistent with density
     V_from_density = (cfg.Z * cfg.mol_weight / NA) / (C[:, 6] * 1e-24)
     V_from_abc     = C[:, 0] * C[:, 1] * C[:, 2]  # orthorhombic approximation
@@ -236,24 +296,18 @@ def maximize_ei(gp: GPSurrogate, database_records: List[dict],
     if len(C) == 0:
         return []
 
-    mu, std = gp.predict(C)
-    ei_vals = expected_improvement(mu, std, best_y, xi=cfg.ei_xi)
+    acquisition = _acquisition(cfg)
+    if acquisition == "thompson":
+        picked = _thompson(gp, C, cfg, rng)
+    elif getattr(cfg, "gp_batch", "diverse") == "believer":
+        picked = _believer(gp, C, best_y, cfg)
+    else:
+        picked = _diverse(gp, C, best_y, cfg)
 
-    # Select diverse top suggestions (avoid clustering)
-    X_scaled  = gp.scaler_X.transform(C)
-    idx_sorted = np.argsort(-ei_vals)
     suggestions = []
-    used_scaled = []
-
-    for i in idx_sorted:
-        if len(suggestions) >= cfg.num_ei_suggestions:
-            break
-        c_i = X_scaled[i]
-        if any(np.linalg.norm(c_i - u) < 0.5 for u in used_scaled):
-            continue
-        used_scaled.append(c_i)
+    for i, mu_i, std_i, score_i in picked:
         V_i = (cfg.Z * cfg.mol_weight / NA) / (C[i, 6] * 1e-24)
-        suggestions.append({
+        s = {
             'a':       float(C[i, 0]),
             'b':       float(C[i, 1]),
             'c':       float(C[i, 2]),
@@ -262,12 +316,121 @@ def maximize_ei(gp: GPSurrogate, database_records: List[dict],
             'gamma':   float(C[i, 5]),
             'density': float(C[i, 6]),
             'volume':  float(V_i),
-            'E_pred':  float(mu[i]),
-            'E_std':   float(std[i]),
-            'EI':      float(ei_vals[i]),
-        })
-
+            'E_pred':  float(mu_i),
+            'E_std':   float(std_i),
+        }
+        if acquisition == "ei":
+            s['EI'] = float(score_i)
+        else:
+            s['acquisition'] = acquisition
+            s['score'] = float(score_i)
+        if gp.use_anisotropy:
+            s['anisotropy'] = float(C[i, 7])
+        suggestions.append(s)
     return suggestions
+
+
+def _diverse(gp: GPSurrogate, C: np.ndarray, best_y: float, cfg):
+    """
+    The published selection: the highest-scoring candidates, skipping any
+    within 0.5 of one already taken in scaled feature space. Returns
+    (index, mu, std, score) per suggestion.
+    """
+    mu, std = gp.predict(C)
+    score = _score(mu, std, best_y, cfg)
+
+    # Select diverse top suggestions (avoid clustering)
+    X_scaled  = gp.scaler_X.transform(C)
+    idx_sorted = np.argsort(-score)
+    picked = []
+    used_scaled = []
+
+    for i in idx_sorted:
+        if len(picked) >= cfg.num_ei_suggestions:
+            break
+        c_i = X_scaled[i]
+        if any(np.linalg.norm(c_i - u) < 0.5 for u in used_scaled):
+            continue
+        used_scaled.append(c_i)
+        picked.append((i, mu[i], std[i], score[i]))
+    return picked
+
+
+def _pool(score: np.ndarray, size: int) -> np.ndarray:
+    """The `size` highest-scoring candidates, best first."""
+    size = min(size, len(score))
+    top = np.argpartition(-score, size - 1)[:size]
+    return top[np.argsort(-score[top])]
+
+
+def _believer(gp: GPSurrogate, C: np.ndarray, best_y: float, cfg):
+    """
+    Kriging believer (Ginsbourger, Le Riche and Carraro, 2010). The batch is
+    taken one at a time: after each pick the GP is told that the energy there
+    is what it predicts, with the hyperparameters left as fitted, and the
+    rest are scored again. A believed point has no uncertainty left to offer,
+    so the next pick goes elsewhere for a reason the model can state, where
+    "diverse" keeps picks apart by a fixed distance.
+
+    Only the gp.pool best candidates by the first scoring are re-scored: the
+    batch is drawn from among them.
+    """
+    from sklearn.gaussian_process import GaussianProcessRegressor
+
+    mu, std = gp.predict(C)
+    pool = _pool(_score(mu, std, best_y, cfg), cfg.gp_pool)
+    Xp = gp.scaler_X.transform(C[pool])
+    reg = gp.gp
+    X_train = reg.X_train_
+    # y as the regressor was given it (scaled), before normalize_y.
+    y_train = reg.y_train_ * reg._y_train_std + reg._y_train_mean
+    picked, taken = [], np.zeros(len(pool), dtype=bool)
+    model = reg
+    for _ in range(min(cfg.num_ei_suggestions, len(pool))):
+        mu_s, std_s = model.predict(Xp, return_std=True)
+        mu_k = gp.scaler_y.inverse_transform(mu_s.reshape(-1, 1)).ravel() + gp.e_min
+        std_k = std_s * gp.scaler_y.scale_[0]
+        score = _score(mu_k, std_k, best_y, cfg)
+        score[taken] = -np.inf
+        k = int(np.argmax(score))
+        taken[k] = True
+        picked.append((int(pool[k]), mu[pool[k]], std[pool[k]], score[k]))
+        X_train = np.vstack([X_train, Xp[k]])
+        y_train = np.append(y_train, mu_s[k])
+        model = GaussianProcessRegressor(kernel=reg.kernel_, alpha=reg.alpha,
+                                         normalize_y=True, optimizer=None)
+        model.fit(X_train, y_train)
+    return picked
+
+
+def _thompson(gp: GPSurrogate, C: np.ndarray, cfg, rng: np.random.Generator):
+    """
+    Thompson sampling: draw an energy surface from the GP's posterior and take
+    its lowest point, once per suggestion. Each draw is a different plausible
+    landscape, so the batch spreads out by itself, and as fast as the model's
+    uncertainty says it should. The draws are joint over gp.pool candidates
+    chosen at random (a joint draw over all of them would need their full
+    covariance). A candidate drawn twice is skipped, up to three draws per
+    suggestion. The score reported is the drawn energy at the pick.
+    """
+    size = min(cfg.gp_pool, len(C))
+    pool = rng.choice(len(C), size, replace=False)
+    Xp = gp.scaler_X.transform(C[pool])
+    mu_s, cov_s = gp.gp.predict(Xp, return_cov=True)
+    L = np.linalg.cholesky(cov_s + 1e-10 * np.eye(size) * max(np.trace(cov_s) / size, 1e-12))
+    mu, std = gp.predict(C[pool])
+    picked, seen = [], set()
+    for _ in range(3 * cfg.num_ei_suggestions):
+        if len(picked) >= cfg.num_ei_suggestions:
+            break
+        draw = mu_s + L @ rng.standard_normal(size)
+        k = int(np.argmin(draw))
+        if k in seen:
+            continue
+        seen.add(k)
+        e = gp.scaler_y.inverse_transform([[draw[k]]])[0, 0] + gp.e_min
+        picked.append((int(pool[k]), mu[k], std[k], e))
+    return picked
 
 
 # ---------------------------------------------------------------------------
@@ -289,13 +452,20 @@ def gp_report(gp: GPSurrogate, suggestions: List[dict],
             lines.append(f"    {name:>10}: {bar} ({val:.3f})")
 
     if suggestions:
-        lines.append(f"  Top {min(5, len(suggestions))} EI suggestions:")
+        # EI, as published; another acquisition is named, with its score.
+        key = 'EI' if 'EI' in suggestions[0] else 'score'
+        what = 'EI' if key == 'EI' else suggestions[0]['acquisition']
+        lines.append(f"  Top {min(5, len(suggestions))} {what} suggestions:")
+        an = 'anisotropy' in suggestions[0]
         lines.append(f"    {'beta':>8} {'density':>9} {'volume':>8} "
-                     f"{'E_pred':>12} {'±':>8} {'EI':>10}")
+                     + (f"{'aniso':>6} " if an else "")
+                     + f"{'E_pred':>12} {'±':>8} {key:>10}")
         for s in suggestions[:5]:
             lines.append(f"    {s['beta']:>8.1f} {s['density']:>9.3f} "
-                         f"{s['volume']:>8.0f} {s['E_pred']:>12.4f} "
-                         f"{s['E_std']:>8.4f} {s['EI']:>10.6f}")
+                         f"{s['volume']:>8.0f} "
+                         + (f"{s['anisotropy']:>6.2f} " if an else "")
+                         + f"{s['E_pred']:>12.4f} "
+                         f"{s['E_std']:>8.4f} {s[key]:>10.6f}")
 
     report = "\n".join(lines)
     if logger:

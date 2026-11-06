@@ -12,17 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 """The repository ships a runnable example, and no molecule of its own.
 
 The molecule under study belongs to whoever runs the search: it is input data,
 not part of the tool, and it does not travel with the code. The inputs of the
 search reported in the accompanying article are in its data deposit. What is
 shipped is a generic example (benzene) that anyone can run as-is, with the
-relaxation protocol of that search.
+relaxation protocol and the search settings of the article (release 1.1.0).
 """
 
 import os
+import tomllib
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,18 +31,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 class TestShippedExample(unittest.TestCase):
 
     def setUp(self):
-        with open(os.path.join(ROOT, "INPUT.txt")) as f:
-            self.input_txt = f.read()
-
-    def _value(self, key):
-        for line in self.input_txt.splitlines():
-            line = line.split("#")[0].strip()
-            if line.lower().startswith(key.lower()) and "=" in line:
-                return line.partition("=")[2].strip()
-        self.fail(f"{key} not found in INPUT.txt")
+        with open(os.path.join(ROOT, "cryal.toml"), "rb") as f:
+            self.toml = tomllib.load(f)
 
     def _script(self):
-        with open(os.path.join(ROOT, self._value("lammpsInput"))) as f:
+        path = os.path.join(ROOT, self.toml["backend"]["lammps"]["input"])
+        with open(path) as f:
             return [l.split("#")[0].strip() for l in f.read().splitlines()]
 
     def test_the_example_molecule_exists_and_is_a_valid_xyz(self):
@@ -55,7 +49,7 @@ class TestShippedExample(unittest.TestCase):
         self.assertEqual(declared, 12)
 
     def test_the_example_input_points_at_the_example_molecule(self):
-        molecule = self._value("moleculeFile")
+        molecule = self.toml["general"]["molecule"]
         self.assertTrue(molecule.startswith("examples/"), molecule)
         self.assertTrue(os.path.exists(os.path.join(ROOT, molecule)))
 
@@ -63,10 +57,10 @@ class TestShippedExample(unittest.TestCase):
         with open(os.path.join(ROOT, ".gitignore")) as f:
             self.assertIn("molecule.xyz", f.read().split())
 
-    def test_specorder_matches_the_lammps_script(self):
+    def test_species_match_the_lammps_script(self):
         # A mismatch here is a run that dies on the first structure: LAMMPS
         # maps atom types to elements by position in both lists.
-        spec = self._value("specOrder").split()
+        spec = self.toml["backend"]["lammps"]["species"]
         for line in self._script():
             if line.startswith("pair_coeff"):
                 self.assertEqual(line.split()[3:], spec)
@@ -75,7 +69,7 @@ class TestShippedExample(unittest.TestCase):
             self.fail("no pair_coeff line in the LAMMPS script")
 
     def test_the_masses_cover_every_atom_type(self):
-        spec = self._value("specOrder").split()
+        spec = self.toml["backend"]["lammps"]["species"]
         masses = [l for l in self._script() if l.startswith("mass ")]
         self.assertEqual(len(masses), len(spec))
 
@@ -93,9 +87,10 @@ class TestShippedExample(unittest.TestCase):
         self.assertTrue(any(l.startswith("minimize") for l in script))
 
     def test_the_example_matches_the_article_search_settings(self):
-        # The CH-pi optimizer was off and the cycle budget was 20 in that search.
-        self.assertEqual(self._value("useChpiOptimizer").lower(), "false")
-        self.assertEqual(self._value("numCycles"), "20")
+        # BACH, the CH-pi optimizer off and a budget of 20 cycles, as in that search.
+        self.assertEqual(self.toml["general"].get("algorithm", "bach"), "bach")
+        self.assertIs(self.toml["chpi"]["enabled"], False)
+        self.assertEqual(self.toml["active_learning"]["cycles"], 20)
 
 
 if __name__ == "__main__":

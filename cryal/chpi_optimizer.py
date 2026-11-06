@@ -16,8 +16,8 @@
 chpi_optimizer.py — Optional geometric CH-pi contact optimizer.
 
 Adjusts molecular positions to maximize H...aromatic centroid contacts
-in the equilibrium range [d_min, d_max]. Activated by useChpiOptimizer = True
-in INPUT.txt.
+in the equilibrium range [d_min, d_max]. Activated by chpi.enabled = true
+in cryal.toml.
 
 The optimizer is a greedy iterative procedure:
   1. Find all intermolecular CH-pi contacts within d_search.
