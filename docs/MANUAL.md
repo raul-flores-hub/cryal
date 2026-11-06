@@ -464,7 +464,7 @@ databases built with different backends, and keep the backend when resuming.
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `input` | string | `"in_v3.lammps"` | LAMMPS input script for the relaxation. The shipped one is the article's protocol: a staged NPT anneal on a triclinic cell (20 K at 3000 bar, then 20 → 10 K and 10 K at 1 bar; 0.4 fs, 12 000 steps), then `box/relax` and conjugate gradient |
+| `input` | string | `"in_v3.lammps"` | LAMMPS input script for the relaxation. The shipped one is the article's protocol: a staged NPT anneal on a triclinic cell (20 K at 3000 bar, then 20 → 10 K and 10 K at 1 bar; 0.4 fs, 12 000 steps), then a conjugate-gradient minimization in which the cell is also relaxed isotropically at 1 bar (`fix box/relax iso`) |
 | `command` | string | `"lmp"` | how to start LAMMPS. MACE needs the Kokkos GPU build: e.g. `"lmp -k on g 1 -sf kk -pk kokkos newton on neigh half"` (that is the example's value) |
 | `species` | list of strings | `["C", "H", "O", "N"]` | element order of the LAMMPS atom types; must match `pair_coeff` and `mass` in the script. (example: `["C", "H"]`) |
 
