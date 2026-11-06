@@ -153,8 +153,9 @@ the same elements in `pair_coeff`, and scale `cell.min_axis` to the molecule
 
 `in_v3.lammps` is the relaxation protocol of the TMPA-An search reported in the
 accompanying article: a staged *NPT* anneal on a triclinic cell (20 K at
-3000 bar, then 20 → 10 K and 10 K at 1 bar; 0.4 fs, 12 000 steps), then
-`box/relax` and a conjugate-gradient minimization. Its parameters were chosen
+3000 bar, then 20 → 10 K and 10 K at 1 bar; 0.4 fs, 12 000 steps), then a
+conjugate-gradient minimization in which the cell is also relaxed isotropically
+at 1 bar (`fix box/relax iso`). Its parameters were chosen
 for that system; they relax benzene, but they are not tuned for it. The other
 settings of `cryal.toml` are those of that search too — BACH, 20 cycles, the
 CH–π optimizer off — except the ones that depend on the molecule. The exact

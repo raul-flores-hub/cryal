@@ -74,7 +74,8 @@ class TestShippedExample(unittest.TestCase):
         self.assertEqual(len(masses), len(spec))
 
     def test_the_script_is_the_protocol_of_the_article(self):
-        # Staged NPT anneal on a triclinic cell, then box/relax and minimize.
+        # Staged NPT anneal on a triclinic cell, then one minimization with the
+        # cell relaxed by box/relax.
         script = [l for l in self._script() if l]
         self.assertIn("timestep 0.0004".split(), [l.split() for l in script])
         npt = [l.split() for l in script if l.startswith("fix") and " npt " in f" {l} "]
