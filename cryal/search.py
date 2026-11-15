@@ -26,9 +26,9 @@ have been evaluated. Everything else is common, and the same as BACH's:
   - every candidate goes through the same CH–π step, backend, gate,
     integrity check and parallel pool, into the same database;
   - [active_learning] sets the budget (cycles, structures_per_cycle) and the
-    stopping rule (max_no_improve_cycles, improvement_threshold), and the
-    early-stopping state is
-    rebuilt on resume exactly as BACH rebuilds it.
+    stopping rule (max_no_improve_cycles, improvement_threshold), and on
+    resume the early-stopping state is rebuilt, and an interrupted cycle
+    completed (CyclePlan), exactly as BACH does.
 
 So a comparison between searches run from one cryal.toml with one key changed
 compares only the way candidates are proposed.
@@ -46,7 +46,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .active_learning import (CrystalDatabase, _apply_chpi, _evaluate_batch,
+from .active_learning import (CrystalDatabase, CyclePlan, _apply_chpi, _best_up_to,
+                              _evaluate_batch, resume_point,
                               _reconstruct_resume_state, _save_cycle_report)
 from .backends import get_backend, get_reference_bonds
 from .config import GA_OPERATORS, Config, print_config_summary
@@ -191,21 +192,24 @@ def run_search(cfg: Config, strategy: Strategy):
                          cif_dir=os.path.join(cfg.output_dir, "structures"))
     unit = strategy.unit.lower()
 
-    # --- Resume: the same rule as BACH.
-    resume = bool(cfg.resume) and len(db) > 0
-    start_cycle = 1
+    # --- Resume: the same rule as BACH, an interrupted cycle completed first.
+    resume, unfinished, start_cycle = resume_point(cfg, db, logger)
     best_energy_prev = None
     no_improve_count = 0
-    if cfg.resume and len(db) == 0:
+    if cfg.resume and not resume:
         logger.warning(f"resume=True but no existing database in {db.db_path} — "
                        f"starting a fresh run from {unit} 0")
     if resume:
-        last_cycle = max(r['cycle'] for r in db.records)
-        start_cycle = last_cycle + 1
         best_energy_prev, no_improve_count = _reconstruct_resume_state(
             db, start_cycle, cfg.improvement_threshold)
-        logger.info(f"RESUME — {len(db)} structures loaded; continuing at "
-                    f"{unit} {start_cycle} (no_improve_count = {no_improve_count})")
+        if unfinished is not None:
+            logger.info(f"RESUME — {len(db)} structures loaded; {unit} "
+                        f"{unfinished.cycle} was interrupted, {len(unfinished.pending())} "
+                        f"of its {len(unfinished)} candidates left to evaluate; then "
+                        f"{unit} {start_cycle} (no_improve_count = {no_improve_count})")
+        else:
+            logger.info(f"RESUME — {len(db)} structures loaded; continuing at "
+                        f"{unit} {start_cycle} (no_improve_count = {no_improve_count})")
 
     # Seeded exactly as active_learning.run is. That does not make cycle 0
     # the same structures as BACH's: PyXtal places molecules with a generator
@@ -224,8 +228,11 @@ def run_search(cfg: Config, strategy: Strategy):
     ref_bonds = get_reference_bonds(cfg.molecule_file, cfg.integrity_max_bond_ratio) \
         if cfg.check_molecular_integrity else []
     pool = build_pool(cfg, backend, logger)
+    # unfinished_cycle: a strategy must not settle it at start(); it is
+    # completed, and then closed by after_cycle() like any other.
     ctx = SimpleNamespace(cfg=cfg, db=db, logger=logger, rng=rng, mol=mol,
-                          mol_size=mol.size)
+                          mol_size=mol.size,
+                          unfinished_cycle=unfinished.cycle if unfinished else None)
 
     try:
         mol_ring_info = ch_pairs = None
@@ -235,11 +242,33 @@ def run_search(cfg: Config, strategy: Strategy):
             logger.warning("CH-pi optimizer requested but RDKit not available — disabled")
 
         def evaluate(structs, cycle):
+            """CH-pi, the candidates written down (CyclePlan), then evaluated."""
             structs = _apply_chpi(structs, mol_ring_info, ch_pairs, mol.size, cfg, logger)
             batch_start = sum(1 for r in db.records if r['cycle'] < cycle)
-            return _evaluate_batch(structs, cfg, backend, cycle=cycle,
-                                   batch_start=batch_start, ref_bonds=ref_bonds,
-                                   mol_size=mol.size, db=db, logger=logger, pool=pool)
+            plan = CyclePlan.create(cfg.output_dir, cycle, batch_start, structs)
+            return plan, _evaluate_batch(structs, cfg, backend, cycle=cycle,
+                                         batch_start=batch_start, ref_bonds=ref_bonds,
+                                         mol_size=mol.size, db=db, logger=logger,
+                                         pool=pool, plan=plan)
+
+        def end_cycle(cycle, plan, n_ok, t0, best_before):
+            """What follows a cycle's evaluation, whether or not it was interrupted."""
+            if cycle == 0:
+                logger.info(f"{strategy.unit.capitalize()} 0 complete: "
+                            f"{n_ok}/{len(plan)} OK  [{time.time()-t0:.0f}s]")
+                plan.finish(n_ok)
+                return
+            logger.info(f"{strategy.unit.capitalize()} {cycle} complete: "
+                        f"{n_ok}/{len(plan)} OK  [{time.time()-t0:.0f}s]")
+            strategy.after_cycle(ctx, cycle)
+            report_cycle(db.records, cycle, best_before, logger)
+            if db.best_energy() is not None:
+                br = db.best_record()
+                logger.info(f"Best so far: E={br['energy']:.4f} eV  "
+                            f"rho={br['density']:.3f}  V={br['volume']:.0f} Å³  "
+                            f"({unit} {br['cycle']}, {source_family(br['source'])})")
+            _save_cycle_report(db, cycle, cfg.output_dir)
+            plan.finish(n_ok)
 
         # ================================================================
         # Cycle 0: BACH's cycle 0
@@ -255,11 +284,26 @@ def run_search(cfg: Config, strategy: Strategy):
             if seeds:
                 logger.info(f"Loaded {len(seeds)} seed/perturbation structures")
                 structs.extend(seeds)
-            n_ok = evaluate(structs, 0)
-            logger.info(f"{strategy.unit.capitalize()} 0 complete: "
-                        f"{n_ok}/{len(structs)} OK  [{time.time()-t0:.0f}s]")
+            plan, n_ok = evaluate(structs, 0)
+            end_cycle(0, plan, n_ok, t0, None)
 
         strategy.start(ctx)
+
+        # ================================================================
+        # A cycle the run was interrupted in: completed with the candidates
+        # it proposed, then closed like any other
+        # ================================================================
+        if unfinished is not None:
+            cycle = unfinished.cycle
+            logger.info("=" * 60)
+            logger.info(f"{strategy.unit} {cycle} — completing the interrupted {unit}")
+            logger.info("=" * 60)
+            t0 = time.time()
+            n_ok = _evaluate_batch(None, cfg, backend, cycle=cycle,
+                                   batch_start=unfinished.batch_start, ref_bonds=ref_bonds,
+                                   mol_size=mol.size, db=db, logger=logger, pool=pool,
+                                   plan=unfinished)
+            end_cycle(cycle, unfinished, n_ok, t0, _best_up_to(db, cycle - 1))
 
         # ================================================================
         # Cycles start_cycle .. num_cycles
@@ -284,17 +328,8 @@ def run_search(cfg: Config, strategy: Strategy):
             best_energy_prev = best_now
 
             structs = strategy.propose(ctx, cycle)
-            n_ok = evaluate(structs, cycle)
-            logger.info(f"{strategy.unit.capitalize()} {cycle} complete: "
-                        f"{n_ok}/{len(structs)} OK  [{time.time()-t0:.0f}s]")
-            strategy.after_cycle(ctx, cycle)
-            report_cycle(db.records, cycle, best_now, logger)
-            if db.best_energy() is not None:
-                br = db.best_record()
-                logger.info(f"Best so far: E={br['energy']:.4f} eV  "
-                            f"rho={br['density']:.3f}  V={br['volume']:.0f} Å³  "
-                            f"({unit} {br['cycle']}, {source_family(br['source'])})")
-            _save_cycle_report(db, cycle, cfg.output_dir)
+            plan, n_ok = evaluate(structs, cycle)
+            end_cycle(cycle, plan, n_ok, t0, best_now)
 
         logger.info("=" * 60)
         logger.info(f"{strategy.title.upper()} COMPLETE")

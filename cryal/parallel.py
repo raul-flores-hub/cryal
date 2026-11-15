@@ -593,13 +593,17 @@ class WorkerPool:
 
     # -- running a cycle ---------------------------------------------------
 
-    def evaluate_all(self, tasks, ref_bonds, mol_size):
+    def evaluate_all(self, tasks, ref_bonds, mol_size, on_result=None):
         """
         Evaluate every task, returning results in the order they were given.
 
         `tasks` is a sequence of (index, step_dir, atoms). The return value is
         a list of (index, relaxed_or_None, energy_or_None) in task order, so
         the caller writes the database exactly as a serial run would.
+
+        on_result(index, relaxed, energy, message), if given, is called on
+        this thread as each task finishes, in the order they finish: what a
+        run checkpoints, so that an interrupted batch keeps what it relaxed.
         """
         tasks = list(tasks)
         if not tasks:
@@ -617,14 +621,16 @@ class WorkerPool:
                 position = counter["n"]
             self.logger.info(f"  [{position}/{total}] {os.path.basename(step_dir)} "
                              f"→ {outcome[2]}")
-            return index, outcome[0], outcome[1]
+            return index, outcome[0], outcome[1], outcome[2]
 
         with ThreadPoolExecutor(max_workers=max(1, self.n_slots),
                                 thread_name_prefix="cryal-eval") as pool:
             futures = [pool.submit(work, t) for t in tasks]
             for fut in as_completed(futures):
-                index, relaxed, energy = fut.result()
+                index, relaxed, energy, message = fut.result()
                 results[index] = (relaxed, energy)
+                if on_result is not None:
+                    on_result(index, relaxed, energy, message)
 
         return [(index, *results[index]) for index, _, _ in tasks]
 

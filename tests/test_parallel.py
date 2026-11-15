@@ -189,6 +189,16 @@ class TestPoolScheduling(unittest.TestCase):
         self.assertEqual(len(backend.seen), 12)
         self.assertEqual(len(set(backend.seen)), 12)
 
+    def test_each_result_is_handed_over_as_it_finishes(self):
+        # What a run checkpoints (CyclePlan), so an interrupted batch keeps
+        # the relaxations that finished.
+        backend = RecordingBackend()
+        pool = self._pool(backend, slots=3)
+        seen = []
+        results = pool.evaluate_all(self._tasks(7), ref_bonds=[], mol_size=4,
+                                    on_result=lambda i, r, e, msg: seen.append((i, e)))
+        self.assertEqual(sorted(seen), sorted((i, e) for i, _, e in results))
+
     def test_results_come_back_in_candidate_order(self):
         # Ids and CIF names must not depend on which slot finished first.
         backend = RecordingBackend(energy_of=lambda a: -float(len(a)) * a.cell[0, 0])

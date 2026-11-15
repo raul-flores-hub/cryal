@@ -713,7 +713,9 @@ Everything goes to `general.output_dir`:
 | path | contents |
 |---|---|
 | `cryal.log` | the run's log: configuration summary, every candidate, per-cycle summaries |
-| `database.json` | one record per relaxed structure (below); saved after every evaluation |
+| `database.json` | one record per relaxed structure (below); saved after every evaluation (a parallel batch: at its end) |
+| `cycle_in_progress.json` | while a cycle runs: its candidates, written before any is evaluated, and each one's outcome as it arrives. Removed when the cycle ends |
+| `cycles.json` | every finished cycle, with how many candidates it planned and kept |
 | `structures/` | the relaxed structure of every record, as CIF |
 | `steps/` | each candidate's working directory (backend input and output) |
 | `cycleNNN_report.json` | per cycle: best structure, energy, density and β statistics |
@@ -741,11 +743,21 @@ and `n_chpi`. Records made by the other searches add:
 ## 8. Resuming, reproducibility, and common errors
 
 **Resuming.** `python run_cryal.py --resume` (or `resume = true`) continues an
-interrupted run from `output_dir` without recomputing anything: the database
-is saved after every evaluation, the stopping rule's state is rebuilt, and
-every search rebuilds its own state from the database — the GA's population,
-the basin-hopping walkers, the swarm, CMA-ES's distribution. Keep the input
-file, the backend and the potential the same when resuming.
+interrupted run from `output_dir` without recomputing anything: the stopping
+rule's state is rebuilt, and every search rebuilds its own state from the
+database — the GA's population, the basin-hopping walkers, the swarm, CMA-ES's
+distribution. The cycle the run was interrupted in, cycle 0 included, is
+completed first: its candidates were written to `cycle_in_progress.json`
+before any was evaluated, with each outcome as it arrived, so the resumed run
+evaluates the ones left — not new ones — and the cycle ends as it would have
+without the interruption. This holds for every algorithm and for parallel
+evaluation, where the relaxations that finished are kept although the batch
+was not yet in the database. Keep the input file, the backend and the
+potential the same when resuming.
+
+A run made before `cycles.json` existed has no record of which cycles
+finished: its last cycle is taken as finished, as it always was, and the log
+says so.
 
 **Reproducibility.** `random_seed` fixes CrYAL's own random draws (space groups,
 volumes, cells, the searches' choices), but PyXtal places the molecules with a

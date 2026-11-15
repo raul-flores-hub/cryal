@@ -61,7 +61,7 @@ from .utils import (setup_logger, get_molecules_robust,
                     compute_density, cell_params_dict, check_bond_integrity)
 from .structure_gen import generate_structures, load_seeds
 from .backends import get_backend, get_reference_bonds
-from .parallel import build_pool
+from .parallel import atoms_from_dict, atoms_to_dict, build_pool
 from .gp_model import GPSurrogate, maximize_ei, gp_report
 
 try:
@@ -120,6 +120,206 @@ class CrystalDatabase:
 
     def __len__(self):
         return len(self.records)
+
+
+# ---------------------------------------------------------------------------
+# The cycle being evaluated
+# ---------------------------------------------------------------------------
+
+PLAN_FILE = "cycle_in_progress.json"
+LEDGER_FILE = "cycles.json"
+
+
+def _json_safe(v):
+    """numpy scalars and arrays as plain JSON values."""
+    if isinstance(v, dict):
+        return {k: _json_safe(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x) for x in v]
+    if isinstance(v, np.ndarray):
+        return _json_safe(v.tolist())
+    if isinstance(v, np.generic):
+        return v.item()
+    return v
+
+
+class CyclePlan:
+    """
+    A cycle's candidates, written down before any is evaluated, and what
+    became of each one as it finishes.
+
+    This is what lets --resume complete an interrupted cycle instead of
+    counting it as done: the candidates that were not evaluated are the ones
+    the cycle proposed, so the completed cycle is the one an uninterrupted run
+    would have evaluated, for every algorithm. A candidate's outcome is kept
+    here until its record is in the database, which a parallel batch writes
+    only at its end.
+
+    The file (PLAN_FILE in the output directory) exists only while a cycle is
+    in progress. A finished cycle is removed from it and added to LEDGER_FILE,
+    which lists every finished cycle with how many candidates it planned and
+    kept. With path None nothing is written (a batch evaluated outside a run).
+    """
+
+    #: What a candidate carries into its record besides the structure.
+    KEYS = ('source', 'space_group', 'n_chpi_contacts', 'parents', 'walker',
+            'cma', 'particle', 'velocity')
+
+    def __init__(self, path: Optional[str], cycle: int, batch_start: int,
+                 candidates: List[Dict], outcomes: Optional[List] = None):
+        self.path = path
+        self.cycle = cycle
+        self.batch_start = batch_start
+        self.candidates = candidates
+        self.outcomes = outcomes if outcomes is not None else [None] * len(candidates)
+        self._relaxed: Dict[int, object] = {}
+
+    # -- making and finding one --------------------------------------------
+
+    @classmethod
+    def create(cls, output_dir: Optional[str], cycle: int, batch_start: int,
+               structs: List[Dict]) -> "CyclePlan":
+        candidates = []
+        for s in structs:
+            c = {k: _json_safe(s[k]) for k in cls.KEYS if k in s}
+            c['atoms'] = atoms_to_dict(s['atoms'])
+            candidates.append(c)
+        path = os.path.join(output_dir, PLAN_FILE) if output_dir else None
+        plan = cls(path, cycle, batch_start, candidates)
+        plan._structs = structs
+        plan._write()
+        return plan
+
+    @classmethod
+    def load(cls, output_dir: str) -> Optional["CyclePlan"]:
+        """The cycle that was in progress, or None if the last one finished."""
+        path = os.path.join(output_dir, PLAN_FILE)
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            d = json.load(f)
+        if d['cycle'] in finished_cycles(output_dir):
+            # Stopped between adding it to the ledger and removing this file.
+            os.remove(path)
+            return None
+        return cls(path, d['cycle'], d['batch_start'], d['candidates'], d['outcomes'])
+
+    @staticmethod
+    def discard(output_dir: str) -> None:
+        path = os.path.join(output_dir, PLAN_FILE)
+        if os.path.exists(path):
+            os.remove(path)
+
+    # -- the candidates and their outcomes ---------------------------------
+
+    def __len__(self):
+        return len(self.candidates)
+
+    def structs(self) -> List[Dict]:
+        """The candidates as the evaluation pipeline takes them."""
+        if getattr(self, '_structs', None) is None:
+            out = []
+            for c in self.candidates:
+                s = {k: v for k, v in c.items() if k != 'atoms'}
+                s['atoms'] = atoms_from_dict(c['atoms'])
+                out.append(s)
+            self._structs = out
+        return self._structs
+
+    def pending(self) -> List[int]:
+        """Positions of the candidates not evaluated yet."""
+        return [i for i, o in enumerate(self.outcomes) if o is None]
+
+    def note(self, i: int, relaxed, energy, reason: Optional[str] = None) -> None:
+        """Candidate i finished: relaxed to `energy`, or rejected for `reason`."""
+        if relaxed is None or energy is None:
+            self.outcomes[i] = {'failed': reason or ''}
+        else:
+            self.outcomes[i] = {'energy': float(energy), 'atoms': atoms_to_dict(relaxed)}
+            self._relaxed[i] = relaxed
+        self._write()
+
+    def result(self, i: int):
+        """(relaxed, energy, reason) of an evaluated candidate."""
+        o = self.outcomes[i]
+        if 'failed' in o:
+            return None, None, o['failed'] or None
+        relaxed = self._relaxed.get(i)
+        if relaxed is None:
+            relaxed = atoms_from_dict(o['atoms'])
+        return relaxed, o['energy'], None
+
+    def finish(self, n_ok: int) -> None:
+        """The cycle is over: add it to the ledger, then forget it."""
+        if self.path is None:
+            return
+        output_dir = os.path.dirname(self.path)
+        ledger = os.path.join(output_dir, LEDGER_FILE)
+        cycles = _read_ledger(output_dir)
+        cycles.append({'cycle': self.cycle, 'planned': len(self), 'kept': n_ok})
+        _write_atomic(ledger, cycles)
+        os.remove(self.path)
+
+    def _write(self):
+        if self.path is None:
+            return
+        _write_atomic(self.path, {'cycle': self.cycle, 'batch_start': self.batch_start,
+                                  'candidates': self.candidates,
+                                  'outcomes': self.outcomes})
+
+
+def _write_atomic(path: str, data) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, 'w') as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def _read_ledger(output_dir: str) -> List[Dict]:
+    path = os.path.join(output_dir, LEDGER_FILE)
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return json.load(f)
+
+
+def finished_cycles(output_dir: str) -> set:
+    """The cycles the ledger lists as finished."""
+    return {c['cycle'] for c in _read_ledger(output_dir)}
+
+
+def resume_point(cfg: Config, db: "CrystalDatabase", logger):
+    """
+    Where a run starts: (resume, unfinished, start_cycle).
+
+    `unfinished` is the CyclePlan of a cycle that was interrupted, to be
+    completed before cycle start_cycle; None when the last cycle finished.
+    A database from before the ledger existed has no record of which cycles
+    finished, and its last cycle is taken as finished, as it always was.
+    A plan left by an earlier run is discarded when the run does not resume.
+    """
+    plan = CyclePlan.load(cfg.output_dir)
+    resume = bool(cfg.resume) and (len(db) > 0 or plan is not None)
+    if not resume:
+        if plan is not None:
+            logger.warning(f"Discarding cycle {plan.cycle} in progress from an earlier "
+                           f"run ({PLAN_FILE}): this run does not resume")
+            CyclePlan.discard(cfg.output_dir)
+        return False, None, 1
+    if plan is not None:
+        return True, plan, plan.cycle + 1
+    last_cycle = max(r['cycle'] for r in db.records)
+    if not os.path.exists(os.path.join(cfg.output_dir, LEDGER_FILE)):
+        logger.warning(f"No {LEDGER_FILE} in {cfg.output_dir} (a run from before cycles "
+                       f"were recorded): cycle {last_cycle} is taken as finished, "
+                       "even if it was interrupted")
+    return True, None, last_cycle + 1
+
+
+def _best_up_to(db: "CrystalDatabase", cycle: int) -> Optional[float]:
+    """The best energy over the records of cycles <= cycle."""
+    vals = [r['energy'] for r in db.records if r['cycle'] <= cycle]
+    return min(vals) if vals else None
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +455,8 @@ def _record_result(s, relaxed, energy, cfg, cycle: int, step_name: str,
 
 def _evaluate_batch(struct_list, cfg, backend, cycle: int, batch_start: int,
                     ref_bonds, mol_size: int,
-                    db: CrystalDatabase, logger, pool=None) -> int:
+                    db: CrystalDatabase, logger, pool=None,
+                    plan: Optional[CyclePlan] = None) -> int:
     """
     Evaluate a batch of structures with the energy backend and add the results
     to the database. Returns the number of successful evaluations.
@@ -264,24 +465,40 @@ def _evaluate_batch(struct_list, cfg, backend, cycle: int, batch_start: int,
     other machines, but they are still recorded in candidate order — so the
     database a parallel run produces is the one a serial run would have
     produced for the same structures.
+
+    With a CyclePlan the batch is the plan's candidates (struct_list is not
+    read): each outcome is written to the plan as it arrives, and only the
+    candidates without one are evaluated, which is how a resumed run completes
+    an interrupted cycle. Those already evaluated count toward the result.
     """
+    if plan is None:
+        plan = CyclePlan.create(None, cycle, batch_start, struct_list)
     if pool is not None:
-        n_ok = _evaluate_batch_parallel(struct_list, cfg, cycle, batch_start,
-                                        ref_bonds, mol_size, db, logger, pool)
+        n_ok = _evaluate_batch_parallel(plan, cfg, ref_bonds, mol_size, db, logger, pool)
         _report_step_budget(backend, logger)
         return n_ok
 
+    structs = plan.structs()
+    recorded = _recorded_steps(db)
     n_ok = 0
-    for i, s in enumerate(struct_list):
-        idx       = batch_start + i
+    for i, s in enumerate(structs):
+        idx       = plan.batch_start + i
         step_name = _step_name(cycle, idx)
         step_dir  = os.path.join(cfg.output_dir, "steps", step_name)
+
+        if plan.outcomes[i] is not None:
+            n_ok += _record_earlier(plan, i, s, cfg, cycle, step_name, recorded, db, logger)
+            continue
 
         logger.info(f"  Evaluating {step_name}  source={s.get('source','?')}  "
                     f"SG={s.get('space_group','?')}")
 
         relaxed, energy = backend.evaluate(
             s['atoms'], step_dir, ref_bonds, mol_size, logger=logger)
+        # The plan first: a candidate in the plan and not in the database is
+        # recorded on resume, one in the database and not in the plan would
+        # be evaluated, and recorded, twice.
+        plan.note(i, relaxed, energy, backend.last_rejection)
 
         if _record_result(s, relaxed, energy, cfg, cycle, step_name, db, logger,
                           reason=backend.last_rejection):
@@ -291,29 +508,61 @@ def _evaluate_batch(struct_list, cfg, backend, cycle: int, batch_start: int,
     return n_ok
 
 
-def _evaluate_batch_parallel(struct_list, cfg, cycle: int, batch_start: int,
-                             ref_bonds, mol_size: int,
+def _recorded_steps(db: CrystalDatabase) -> set:
+    """Step names that already have a record (a record's CIF is named after its step)."""
+    return {os.path.splitext(os.path.basename(r['cif_path']))[0]
+            for r in db.records if r.get('cif_path')}
+
+
+def _record_earlier(plan: CyclePlan, i: int, s: Dict, cfg, cycle: int, step_name: str,
+                    recorded: set, db: CrystalDatabase, logger) -> int:
+    """
+    A candidate evaluated before the run stopped: recorded now if it was kept
+    and its record never reached the database. Returns 1 if it was kept.
+    """
+    relaxed, energy, reason = plan.result(i)
+    if relaxed is None:
+        return 0
+    if step_name in recorded:
+        return 1
+    logger.info(f"  {step_name}  source={s.get('source','?')}  "
+                f"SG={s.get('space_group','?')}  (evaluated before the run stopped)")
+    return int(_record_result(s, relaxed, energy, cfg, cycle, step_name, db, logger))
+
+
+def _evaluate_batch_parallel(plan: CyclePlan, cfg, ref_bonds, mol_size: int,
                              db: CrystalDatabase, logger, pool) -> int:
     """Relax a batch across the pool's slots, then record it in order."""
+    cycle = plan.cycle
+    structs = plan.structs()
+    todo = plan.pending()
     tasks = []
-    for i, s in enumerate(struct_list):
-        idx       = batch_start + i
+    for i in todo:
+        idx       = plan.batch_start + i
         step_name = _step_name(cycle, idx)
         step_dir  = os.path.join(cfg.output_dir, "steps", step_name)
-        tasks.append((idx, step_dir, s['atoms']))
+        tasks.append((idx, step_dir, structs[i]['atoms']))
 
-    logger.info(f"  Evaluating {len(tasks)} candidates on {pool.n_slots} slots "
-                f"({pool.describe()})")
+    def on_result(index, relaxed, energy, message):
+        plan.note(index - plan.batch_start, relaxed, energy, message)
+
     t0 = time.time()
-    results = pool.evaluate_all(tasks, ref_bonds, mol_size)
+    if tasks:
+        logger.info(f"  Evaluating {len(tasks)} candidates on {pool.n_slots} slots "
+                    f"({pool.describe()})")
+        pool.evaluate_all(tasks, ref_bonds, mol_size, on_result=on_result)
     elapsed = time.time() - t0
 
+    recorded = _recorded_steps(db)
+    todo = set(todo)
     n_ok = 0
-    by_index = {index: (relaxed, energy) for index, relaxed, energy in results}
-    for i, s in enumerate(struct_list):
-        idx       = batch_start + i
+    for i, s in enumerate(structs):
+        idx       = plan.batch_start + i
         step_name = _step_name(cycle, idx)
-        relaxed, energy = by_index.get(idx, (None, None))
+        if i not in todo:
+            n_ok += _record_earlier(plan, i, s, cfg, cycle, step_name, recorded, db, logger)
+            continue
+        relaxed, energy, reason = plan.result(i)
         logger.info(f"  {step_name}  source={s.get('source','?')}  "
                     f"SG={s.get('space_group','?')}")
         if _record_result(s, relaxed, energy, cfg, cycle, step_name, db, logger):
@@ -321,7 +570,7 @@ def _evaluate_batch_parallel(struct_list, cfg, cycle: int, batch_start: int,
 
     rate = elapsed / len(tasks) if tasks else 0.0
     logger.info(f"  Batch done in {elapsed/60:.1f} min "
-                f"({rate:.1f} s/candidate wall-clock, {n_ok}/{len(tasks)} kept)")
+                f"({rate:.1f} s/candidate wall-clock, {n_ok}/{len(structs)} kept)")
     return n_ok
 
 
@@ -352,20 +601,20 @@ def run(cfg: Config):
     )
 
     # --- Resume detection ---------------------------------------------------
-    # When cfg.resume is set and an existing database is found, skip cycle 0
-    # and every cycle already present on disk, then continue from the next one.
-    # The interrupted (partial) cycle's evaluations stay in the database and
-    # feed the GP; we simply move on to the following cycle (per design).
-    resume = bool(cfg.resume) and len(db) > 0
-    start_cycle = 1
+    # When cfg.resume is set and an earlier run is found, skip every cycle it
+    # finished. A cycle it interrupted (its plan is on disk) is completed
+    # first: the candidates it proposed and did not evaluate are evaluated,
+    # so it ends as it would have without the interruption.
+    resume, unfinished, start_cycle = resume_point(cfg, db, logger)
     best_energy_prev = None
     no_improve_count = 0
-    if cfg.resume and len(db) == 0:
+    if cfg.resume and not resume:
         logger.warning(f"resume=True but no existing database in {db.db_path} — "
                        "starting a fresh run from cycle 0")
     if resume:
-        last_cycle = max(r['cycle'] for r in db.records)
-        start_cycle = last_cycle + 1
+        # The stopping state at the start of start_cycle. For a cycle being
+        # completed, its own check was made before it was interrupted, and
+        # passed, so the state replayed through it is the one to carry on with.
         best_energy_prev, no_improve_count = _reconstruct_resume_state(
             db, start_cycle, cfg.improvement_threshold)
         br = db.best_record()
@@ -373,12 +622,20 @@ def run(cfg: Config):
         logger.info("RESUME — continuing an existing run")
         logger.info("=" * 60)
         logger.info(f"Loaded {len(db)} evaluated structures from {db.db_path}")
-        logger.info(f"Last cycle on disk = {last_cycle}  →  continuing at cycle {start_cycle}")
-        logger.info(f"Best so far: E={br['energy']:.4f} eV  rho={br['density']:.3f}  "
-                    f"beta={br['beta']:.1f}°  V={br['volume']:.0f} Å³  (cycle {br['cycle']})")
+        if unfinished is not None:
+            logger.info(f"Cycle {unfinished.cycle} was interrupted: "
+                        f"{len(unfinished.pending())} of its {len(unfinished)} candidates "
+                        f"left to evaluate, then cycle {start_cycle}")
+        else:
+            logger.info(f"Last cycle on disk = {start_cycle - 1}  →  "
+                        f"continuing at cycle {start_cycle}")
+        if br is not None:
+            logger.info(f"Best so far: E={br['energy']:.4f} eV  rho={br['density']:.3f}  "
+                        f"beta={br['beta']:.1f}°  V={br['volume']:.0f} Å³  "
+                        f"(cycle {br['cycle']})")
         logger.info(f"Reconstructed no_improve_count = {no_improve_count}/"
                     f"{cfg.max_no_improve_cycles}")
-        if start_cycle > cfg.num_cycles:
+        if start_cycle > cfg.num_cycles and unfinished is None:
             logger.info(f"All {cfg.num_cycles} cycles already complete — "
                         "writing final report and exiting.")
 
@@ -442,6 +699,48 @@ def run(cfg: Config):
                   'rng': np.random.default_rng([seed, 1])}
         suggestions = None
 
+        def end_cycle(cycle, plan, n_ok, t0, best_before):
+            """What follows a cycle's evaluation, whether or not it was interrupted."""
+            if cycle == 0:
+                logger.info(f"Cycle 0 complete: {n_ok}/{len(plan)} OK  "
+                            f"[{time.time()-t0:.0f}s]")
+                if db.best_energy() is not None:
+                    br = db.best_record()
+                    logger.info(f"Best so far: E={br['energy']:.4f} eV  "
+                                f"rho={br['density']:.3f}  beta={br['beta']:.1f}°")
+            else:
+                logger.info(f"Cycle {cycle} complete: {n_ok}/{len(plan)} OK  "
+                            f"[{time.time()-t0:.0f}s]")
+
+                if db.best_energy() is not None:
+                    br = db.best_record()
+                    logger.info(f"Best so far: E={br['energy']:.4f} eV  "
+                                f"rho={br['density']:.3f}  beta={br['beta']:.1f}°  "
+                                f"V={br['volume']:.0f} Å³  (cycle {br['cycle']})")
+
+                if ga is not None:
+                    from .search import report_cycle
+                    report_cycle(db.records, cycle, best_before, logger)
+
+                # Save per-cycle report
+                _save_cycle_report(db, cycle, cfg.output_dir)
+            plan.finish(n_ok)
+
+        # ====================================================================
+        # A cycle the run was interrupted in: completed before anything else
+        # ====================================================================
+        if unfinished is not None:
+            cycle = unfinished.cycle
+            logger.info("=" * 60)
+            logger.info(f"CYCLE {cycle} — completing the interrupted cycle")
+            logger.info("=" * 60)
+            t0 = time.time()
+            n_ok = _evaluate_batch(None, cfg, backend, cycle=cycle,
+                                   batch_start=unfinished.batch_start,
+                                   ref_bonds=ref_bonds, mol_size=mol_size,
+                                   db=db, logger=logger, pool=pool, plan=unfinished)
+            end_cycle(cycle, unfinished, n_ok, t0, _best_up_to(db, cycle - 1))
+
         # ====================================================================
         # Cycle 0: Initialization  (skipped when resuming)
         # ====================================================================
@@ -467,17 +766,12 @@ def run(cfg: Config):
             # Optional CH-pi optimization
             structs = _apply_chpi(structs, mol_ring_info, ch_pairs, mol_size, cfg, logger)
 
-            # Evaluate
+            # Evaluate, the candidates written down first (CyclePlan)
+            plan = CyclePlan.create(cfg.output_dir, 0, 0, structs)
             n_ok = _evaluate_batch(structs, cfg, backend, cycle=0, batch_start=0,
                                    ref_bonds=ref_bonds, mol_size=mol_size,
-                                   db=db, logger=logger, pool=pool)
-
-            logger.info(f"Cycle 0 complete: {n_ok}/{len(structs)} OK  "
-                        f"[{time.time()-t0:.0f}s]")
-            if db.best_energy() is not None:
-                br = db.best_record()
-                logger.info(f"Best so far: E={br['energy']:.4f} eV  "
-                            f"rho={br['density']:.3f}  beta={br['beta']:.1f}°")
+                                   db=db, logger=logger, pool=pool, plan=plan)
+            end_cycle(0, plan, n_ok, t0, None)
 
         # ====================================================================
         # Cycles start_cycle .. num_cycles  (start_cycle = 1 unless resuming)
@@ -545,28 +839,14 @@ def run(cfg: Config):
             # CH-pi
             structs = _apply_chpi(structs, mol_ring_info, ch_pairs, mol_size, cfg, logger)
 
-            # Evaluate
+            # Evaluate, the candidates written down first (CyclePlan)
             batch_start = sum(1 for r in db.records if r['cycle'] < cycle)
+            plan = CyclePlan.create(cfg.output_dir, cycle, batch_start, structs)
             n_ok = _evaluate_batch(structs, cfg, backend, cycle=cycle,
                                    batch_start=batch_start,
                                    ref_bonds=ref_bonds, mol_size=mol_size,
-                                   db=db, logger=logger, pool=pool)
-
-            logger.info(f"Cycle {cycle} complete: {n_ok}/{len(structs)} OK  "
-                        f"[{time.time()-t0:.0f}s]")
-
-            if db.best_energy() is not None:
-                br = db.best_record()
-                logger.info(f"Best so far: E={br['energy']:.4f} eV  "
-                            f"rho={br['density']:.3f}  beta={br['beta']:.1f}°  "
-                            f"V={br['volume']:.0f} Å³  (cycle {br['cycle']})")
-
-            if ga is not None:
-                from .search import report_cycle
-                report_cycle(db.records, cycle, best_now, logger)
-
-            # Save per-cycle report
-            _save_cycle_report(db, cycle, cfg.output_dir)
+                                   db=db, logger=logger, pool=pool, plan=plan)
+            end_cycle(cycle, plan, n_ok, t0, best_now)
 
         # ====================================================================
         # Final summary

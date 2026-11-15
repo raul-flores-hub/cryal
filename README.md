@@ -65,7 +65,7 @@ MACE model once already.
 python -m unittest discover -s tests -t .
 ```
 
-361 tests, with the packages of `requirements.txt` and no LAMMPS or GPU; they
+369 tests, with the packages of `requirements.txt` and no LAMMPS or GPU; they
 take seconds. Those of the UMA backend are skipped when fairchem is not
 installed. One expected failure is deliberate: it
 records that `unwrap_molecule` cannot rebuild a molecule longer than half the
@@ -91,7 +91,8 @@ the LAMMPS script must list the same elements in the same order, which a test
 checks for the shipped pair.
 
 An interrupted run (power cut, walltime) resumes from `general.output_dir` without
-recomputing: the database is checkpointed after every evaluation, and the
+recomputing: every outcome is checkpointed as it arrives, the cycle that was
+interrupted is completed with the candidates it had proposed, and the
 early-stopping state is reconstructed so a resumed run converges identically to
 one that was never interrupted.
 

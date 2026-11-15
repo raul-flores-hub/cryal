@@ -107,8 +107,11 @@ class BasinHopping(Strategy):
     def start(self, ctx):
         # A cycle whose trials were evaluated but not settled: the run
         # stopped between the two. Settle it now, before anything moves on.
+        # A cycle being completed (search.run_search) is left alone: it is
+        # settled once all its trials are in.
         pending = sorted({r['cycle'] for r in ctx.db.records
-                          if 'walker' in r and 'accepted' not in r})
+                          if 'walker' in r and 'accepted' not in r
+                          and r['cycle'] != getattr(ctx, 'unfinished_cycle', None)})
         for cycle in pending:
             ctx.logger.info(f"Settling cycle {cycle}, evaluated before the run stopped")
             self.settle(ctx, cycle)
@@ -169,7 +172,10 @@ class BasinHopping(Strategy):
         """Each walker of `cycle` moves to its best trial, or stays, by Metropolis."""
         cfg, db = ctx.cfg, ctx.db
         trials = [r for r in db.records if r['cycle'] == cycle and 'walker' in r]
-        if not trials:
+        if not trials or all('accepted' in r for r in trials):
+            # Nothing to settle, or settled already: a run that stopped after
+            # settling a cycle and before closing it closes it again on resume,
+            # and must not draw its Metropolis tests a second time.
             return
         here = positions(db.records, cfg, ctx.mol, before_cycle=cycle)
         moved = 0
