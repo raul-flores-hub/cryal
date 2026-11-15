@@ -271,6 +271,11 @@ def legacy_to_tables(raw: dict) -> Tuple[Dict[str, Dict[str, object]], List[str]
             dist = "uniform"
         put("monoclinic_beta", "distribution", dist)
 
+    # useChPiOptimizer: the old loader turned it on when it was left out,
+    # and cryal.toml no longer does, so the old default is written down.
+    if "usechpioptimizer" not in raw:
+        put("chpi", "enabled", True)
+
     unread = sorted(k for k in raw if k not in _KEYS and k not in _COMBINED)
     return tables, unread, notes
 

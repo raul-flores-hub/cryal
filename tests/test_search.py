@@ -212,3 +212,21 @@ class TestBasinHopping(SearchCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestImprovementThreshold(unittest.TestCase):
+    """active_learning.improvement_threshold, replayed on resume."""
+
+    def test_the_threshold_decides_what_counts_as_no_improvement(self):
+        from types import SimpleNamespace
+        from cryal.active_learning import _reconstruct_resume_state
+        # Best per cycle: -10.000, -10.005, -10.006 (eV per cell)
+        db = SimpleNamespace(records=[{'cycle': 0, 'energy': -10.000},
+                                      {'cycle': 1, 'energy': -10.005},
+                                      {'cycle': 2, 'energy': -10.006}])
+        # Published rule: both steps (5 meV and 1 meV) are improvements.
+        self.assertEqual(_reconstruct_resume_state(db, 4), (-10.006, 0))
+        # 2 meV: the second step is not.
+        self.assertEqual(_reconstruct_resume_state(db, 4, 0.002), (-10.006, 1))
+        # 10 meV: neither is.
+        self.assertEqual(_reconstruct_resume_state(db, 4, 0.01), (-10.006, 2))

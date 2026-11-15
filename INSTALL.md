@@ -16,9 +16,9 @@ pip install .
 ```
 
 That covers a default run. Five of those packages are what `import cryal`
-needs; the sixth, RDKit, is what the CH-pi optimizer uses, and
-`useChPiOptimizer` is on unless you turn it off -- so it is a dependency of the
-shipped configuration, not of an option. Check it:
+needs; the sixth, RDKit, is what the CH-pi optimizer uses. That optimizer is
+off unless `chpi.enabled = true`, so a run without RDKit works; it is pinned so
+that turning the option on needs nothing more. Check it:
 
 ```bash
 python -m unittest discover -s tests -t .

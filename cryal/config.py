@@ -92,6 +92,9 @@ class Config:
     structures_per_cycle:int   = 50
     pool_size:           int   = 20
     max_no_improve_cycles:int  = 3
+    # eV per cell: a cycle whose best energy differs from the previous one's
+    # by less than this counts as no improvement. 1e-4 is the published rule.
+    improvement_threshold:float = 1e-4
     # BACH + GA: the share of each cycle's random (unbiased) structures that
     # is bred instead by the genetic operators of [ga], from the best
     # structures found so far. 0 is BACH as published.
@@ -204,7 +207,10 @@ class Config:
     cma_stall:           int   = 5       # or when the best has not improved for this many
 
     # --- CHPI OPTIMIZER ---
-    use_chpi_optimizer:  bool  = True
+    # Off: the article's search ran without it, and an ablation found it does
+    # not improve the search. `cryal convert` writes `enabled = true` for an
+    # old input that left it out, since the old loader turned it on.
+    use_chpi_optimizer:  bool  = False
     d_min:               float = 2.6
     d_max:               float = 3.5
     d_target:            float = 3.0
@@ -479,6 +485,7 @@ _SCHEMA = {
         "structures_per_cycle": ("structures_per_cycle", _int),
         "pool_size":            ("pool_size", _int),
         "max_no_improve_cycles": ("max_no_improve_cycles", _int),
+        "improvement_threshold": ("improvement_threshold", _nonneg),
         "ga_fraction":          ("ga_fraction", _unit),
     },
     "space_groups": {
@@ -773,10 +780,24 @@ def print_config_summary(cfg: Config, logger=None):
         f"  Random seed:     {cfg.random_seed}",
         f"  Resume:          {'ON' if cfg.resume else 'OFF'}",
         "",
-        f"  AL cycles:       {cfg.num_cycles}",
-        f"  Initial structs: {cfg.initial_structures}",
-        f"  Per-cycle structs:{cfg.structures_per_cycle}",
-        f"  Pool size:       {cfg.pool_size}",
+    ]
+    if cfg.algorithm == "bach":
+        # The published run prints exactly what it always did.
+        lines += [
+            f"  AL cycles:       {cfg.num_cycles}",
+            f"  Initial structs: {cfg.initial_structures}",
+            f"  Per-cycle structs:{cfg.structures_per_cycle}",
+            f"  Pool size:       {cfg.pool_size}",
+        ]
+    else:
+        # No pool outside BACH; GA and CMA-ES count generations.
+        unit = "Generations:" if cfg.algorithm in ("ga", "cmaes") else "Cycles:"
+        lines += [
+            f"  {unit:<17}{cfg.num_cycles}",
+            f"  Initial structs: {cfg.initial_structures}",
+            f"  Per-cycle structs:{cfg.structures_per_cycle}",
+        ]
+    lines += [
         "",
         f"  Volume range:    [{cfg.volume_min():.0f}, {cfg.volume_max():.0f}] Å³",
         f"  (density prior:  [{cfg.density_min}, {cfg.density_max}] g/cm³)",

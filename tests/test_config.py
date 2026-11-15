@@ -165,6 +165,23 @@ Z = 4
 """
 
 
+class TestDefaultsChangedIn12(_TempFiles):
+    """Defaults that dev changed, and the new key of the stopping rule."""
+
+    def test_chpi_is_off_when_left_out(self):
+        self.assertFalse(self._load(MINIMAL).use_chpi_optimizer)
+        self.assertTrue(self._load(MINIMAL + "[chpi]\nenabled = true\n").use_chpi_optimizer)
+
+    def test_improvement_threshold_defaults_to_the_published_rule(self):
+        self.assertEqual(self._load(MINIMAL).improvement_threshold, 1e-4)
+        cfg = self._load(MINIMAL + "[active_learning]\nimprovement_threshold = 0.01\n")
+        self.assertEqual(cfg.improvement_threshold, 0.01)
+
+    def test_a_negative_threshold_is_refused(self):
+        with self.assertRaises(ValueError):
+            self._load(MINIMAL + "[active_learning]\nimprovement_threshold = -1\n")
+
+
 class TestOldInputs(_TempFiles):
     """The format before cryal.toml: refused by the loader, converted by
     `cryal convert` into the run it described."""
@@ -202,6 +219,12 @@ class TestOldInputs(_TempFiles):
         self.assertEqual((cfg.density_min, cfg.density_max), (0.9, Config().density_max))
         self.assertIsNone(cfg.energy_sanity_max)
         self.assertEqual(cfg.gp_kernel, "matern25")   # anything but rbf was Matérn
+
+    def test_an_old_input_without_the_chpi_key_keeps_it_on(self):
+        # The old loader turned CH-pi on when the key was left out; cryal.toml
+        # turns it off. The conversion writes the old default down.
+        self.assertTrue(self._converted("").use_chpi_optimizer)
+        self.assertFalse(self._converted("useChPiOptimizer = false\n").use_chpi_optimizer)
 
     def test_keys_the_old_loader_ignored_are_listed_not_dropped(self):
         text = convert(self._write(OLD + "someKeyNobodyKnows = 3\n", "_old.in"))

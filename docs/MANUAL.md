@@ -76,7 +76,7 @@ species = ["C", "H", "N", "O"] # same elements, same order as pair_coeff in the 
 min_axis = 6.0                 # Å; scale with your molecule (§6, [cell])
 
 [chpi]
-enabled = false                # off, as in the article; left out, it is on
+enabled = false                # off, as in the article (also the default)
 ```
 
 That runs BACH, the published method, with the LAMMPS/MACE-OFF23 backend and
@@ -505,7 +505,8 @@ LAMMPS script. With `[parallel]`, its local slots are limited to one.
 | `initial_structures` | integer | `100` | random structures in cycle 0 |
 | `structures_per_cycle` | integer | `50` | candidates per cycle; λ for CMA-ES |
 | `pool_size` | integer | `20` | BACH only: best structures whose perturbed copies join each cycle |
-| `max_no_improve_cycles` | integer | `3` | stop when the best energy has not changed (by 1e-4 eV) for this many cycles |
+| `max_no_improve_cycles` | integer | `3` | stop when the best energy has not improved (by `improvement_threshold`) for this many cycles |
+| `improvement_threshold` | number ≥ 0 | `1e-4` | eV per cell: a cycle whose best energy is within this of the previous cycle's counts as no improvement. `1e-4` is the published rule; a resumed run replays the rule with the value in the input |
 | `ga_fraction` | number in [0, 1] | `0.0` | BACH only: share of the random part bred by the GA (§4.2) |
 
 ### `[space_groups]`
@@ -627,13 +628,14 @@ every two structures of equal energy, and the threshold goes in the gap.
 A greedy geometric step, applied to every candidate before relaxation, that
 moves molecules to bring H atoms to `d_target` from aromatic ring centroids.
 Needs RDKit. An ablation found that it does not improve the search, and the
-article's search ran with it off, as the shipped example does. **But the
-default, when the key is left out, is `true`**: write `enabled = false` in your
-own input.
+article's search ran with it off, and it is off unless `enabled = true`.
+An input converted by `cryal convert` from the old format, which turned it on
+when left out, gets `enabled = true` written into it, so the converted run is
+the old one.
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `enabled` | boolean | `true` | run the optimizer. **(example: `false`, as in the article's search)** |
+| `enabled` | boolean | `false` | run the optimizer. The article's search ran without it |
 | `d_range` | `[low, high]` | `[2.6, 3.5]` | Å, H···centroid distances counted as a contact |
 | `d_target` | number | `3.0` | Å, the distance a move aims for |
 | `d_search` | number | `5.0` | Å, search radius when listing contacts. **(example: `6.0`)** |

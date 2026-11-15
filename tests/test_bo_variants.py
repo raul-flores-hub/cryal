@@ -143,6 +143,27 @@ class TestPublishedPath(unittest.TestCase):
         self.assertTrue(any("UCB" in l for l in lines))
 
 
+    def test_the_summary_names_the_budget_of_each_search(self):
+        def summary(**kw):
+            lines = []
+
+            class L:
+                def info(self, s):
+                    lines.append(s)
+            print_config_summary(cfg(**kw), L())
+            return lines
+        bach = summary()
+        self.assertTrue(any("AL cycles" in l for l in bach))
+        self.assertTrue(any("Pool size" in l for l in bach))
+        for algorithm, unit in (("ga", "Generations:"), ("cmaes", "Generations:"),
+                                ("random", "Cycles:"), ("pso", "Cycles:"),
+                                ("basin_hopping", "Cycles:")):
+            with self.subTest(algorithm=algorithm):
+                lines = summary(algorithm=algorithm)
+                self.assertFalse(any("AL cycles" in l or "Pool size" in l for l in lines))
+                self.assertTrue(any(l.strip().startswith(unit) for l in lines))
+
+
 class TestVariants(unittest.TestCase):
 
     def run_variant(self, seed=5, **kw):

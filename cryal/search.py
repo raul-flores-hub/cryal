@@ -26,7 +26,8 @@ have been evaluated. Everything else is common, and the same as BACH's:
   - every candidate goes through the same CH–π step, backend, gate,
     integrity check and parallel pool, into the same database;
   - [active_learning] sets the budget (cycles, structures_per_cycle) and the
-    stopping rule (max_no_improve_cycles), and the early-stopping state is
+    stopping rule (max_no_improve_cycles, improvement_threshold), and the
+    early-stopping state is
     rebuilt on resume exactly as BACH rebuilds it.
 
 So a comparison between searches run from one cryal.toml with one key changed
@@ -201,7 +202,8 @@ def run_search(cfg: Config, strategy: Strategy):
     if resume:
         last_cycle = max(r['cycle'] for r in db.records)
         start_cycle = last_cycle + 1
-        best_energy_prev, no_improve_count = _reconstruct_resume_state(db, start_cycle)
+        best_energy_prev, no_improve_count = _reconstruct_resume_state(
+            db, start_cycle, cfg.improvement_threshold)
         logger.info(f"RESUME — {len(db)} structures loaded; continuing at "
                     f"{unit} {start_cycle} (no_improve_count = {no_improve_count})")
 
@@ -270,7 +272,7 @@ def run_search(cfg: Config, strategy: Strategy):
 
             best_now = db.best_energy()
             if best_energy_prev is not None and best_now is not None:
-                if abs(best_now - best_energy_prev) < 1e-4:
+                if abs(best_now - best_energy_prev) < cfg.improvement_threshold:
                     no_improve_count += 1
                     logger.info(f"No improvement ({no_improve_count}/"
                                 f"{cfg.max_no_improve_cycles})")

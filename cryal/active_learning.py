@@ -366,7 +366,8 @@ def run(cfg: Config):
     if resume:
         last_cycle = max(r['cycle'] for r in db.records)
         start_cycle = last_cycle + 1
-        best_energy_prev, no_improve_count = _reconstruct_resume_state(db, start_cycle)
+        best_energy_prev, no_improve_count = _reconstruct_resume_state(
+            db, start_cycle, cfg.improvement_threshold)
         br = db.best_record()
         logger.info("=" * 60)
         logger.info("RESUME — continuing an existing run")
@@ -490,7 +491,7 @@ def run(cfg: Config):
             # Early stopping
             best_now = db.best_energy()
             if best_energy_prev is not None and best_now is not None:
-                if abs(best_now - best_energy_prev) < 1e-4:
+                if abs(best_now - best_energy_prev) < cfg.improvement_threshold:
                     no_improve_count += 1
                     logger.info(f"No improvement ({no_improve_count}/"
                                  f"{cfg.max_no_improve_cycles})")
@@ -636,7 +637,8 @@ def _generate_with_ga(cfg: Config, suggestions, n_ga: int, db: CrystalDatabase,
     return structs + children
 
 
-def _reconstruct_resume_state(db: CrystalDatabase, start_cycle: int):
+def _reconstruct_resume_state(db: CrystalDatabase, start_cycle: int,
+                              threshold: float = 1e-4):
     """
     Rebuild the early-stopping state (best_energy_prev, no_improve_count) as if
     the main loop had run uninterrupted up to (but not including) start_cycle.
@@ -644,7 +646,8 @@ def _reconstruct_resume_state(db: CrystalDatabase, start_cycle: int):
     Mirrors the loop exactly: at cycle c the loop compares
         best_now = best energy over records with cycle <= c-1
     against best_energy_prev (the previous cycle's best_now, i.e. cycle <= c-2),
-    incrementing no_improve_count when they match within 1e-4 and resetting it
+    incrementing no_improve_count when they match within threshold (eV per
+    cell, active_learning.improvement_threshold) and resetting it
     otherwise. Replaying that here makes a resumed run converge identically to
     one that was never interrupted.
     """
@@ -657,7 +660,7 @@ def _reconstruct_resume_state(db: CrystalDatabase, start_cycle: int):
     for c in range(1, start_cycle):
         best_now = cumbest(c - 1)
         if prev is not None and best_now is not None:
-            if abs(best_now - prev) < 1e-4:
+            if abs(best_now - prev) < threshold:
                 no_improve += 1
             else:
                 no_improve = 0

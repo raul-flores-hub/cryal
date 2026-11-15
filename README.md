@@ -65,8 +65,9 @@ MACE model once already.
 python -m unittest discover -s tests -t .
 ```
 
-101 tests over the pure-Python core — no LAMMPS, no GPU, under a second, and no
-dependency beyond the standard library. One expected failure is deliberate: it
+361 tests, with the packages of `requirements.txt` and no LAMMPS or GPU; they
+take seconds. Those of the UMA backend are skipped when fairchem is not
+installed. One expected failure is deliberate: it
 records that `unwrap_molecule` cannot rebuild a molecule longer than half the
 cell, which is safe only because its single caller is off by default.
 
@@ -216,9 +217,10 @@ backends, distributed relaxations and the alternative searches; a 1.1.0
   group and target volume, because they are not independent once symmetry and
   volume are fixed, and constraining them all over-determines the packing.
 - **The CH–π optimizer is off by design in production runs.** An ablation showed
-  it does not improve the search. It remains available via `chpi.enabled`, and
-  the shipped `cryal.toml` sets it to `false` — but a key left out takes its
-  default, which is `true`, so an input of your own should say `false` too.
+  it does not improve the search. It is off unless `chpi.enabled = true`.
+  (Up to 1.1.0 a key left out turned it on; `cryal convert` writes
+  `enabled = true` into an old input that left it out, so the converted run is
+  the old one.)
 - **The Bayesian guidance can be ablated.** Setting `gp.enabled = false` runs the same
   workflow with the surrogate switched off: candidates are generated without the
   Expected-Improvement bias, while the generator, the potential, the relaxation
