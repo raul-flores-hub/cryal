@@ -86,6 +86,27 @@ class Config:
     uma_device:          str  = "cuda"
     uma_inference_settings: str = "default"
 
+    # --- BACKEND: nvalchemi ---
+    # NVIDIA ALCHEMI Toolkit, run by a worker process in its own environment
+    # (cryal/backends/nvalchemi.py). The defaults are the protocol validated
+    # against LAMMPS: two triclinic NPT stages, then L-BFGS with the cell.
+    nva_python:          str   = ""          # interpreter of the nvalchemi venv
+    nva_model:           str   = ""          # MACE .model file
+    nva_device:          str   = "cuda"
+    nva_dtype:           str   = "float32"
+    nva_cueq:            bool  = True
+    nva_batch_size:      int   = 32          # structures relaxed together
+    nva_timestep:        float = 0.4         # fs
+    nva_thermostat_time: float = 40.0        # fs
+    nva_barostat_time:   float = 400.0       # fs
+    nva_pressure_coupling: str = "triclinic"
+    nva_stages:          List[Dict[str, float]] = field(default_factory=lambda: [
+        {"temperature": 20.0, "pressure": 3000.0, "steps": 6000},
+        {"temperature": 10.0, "pressure": 1.0, "steps": 6000}])
+    nva_fmax:            float = 1e-3        # eV/Å, L-BFGS criterion
+    nva_max_steps:       int   = 10000       # L-BFGS steps
+    nva_timeout:         int   = 0           # s per batch; 0 = no limit
+
     # --- ACTIVE LEARNING ---
     num_cycles:          int   = 10
     initial_structures:  int   = 100
@@ -376,6 +397,47 @@ def _positive_int(path, v):
     return v
 
 
+def _stages(path, v):
+    """[backend.nvalchemi] stages: a list of {temperature, pressure, steps}."""
+    if not isinstance(v, list):
+        _fail(path, v, "a list of tables { temperature = K, pressure = bar, steps = n }")
+    out = []
+    for i, st in enumerate(v):
+        here = f"{path}[{i}]"
+        if not isinstance(st, dict):
+            _fail(here, st, "a table { temperature = K, pressure = bar, steps = n }")
+        extra = sorted(set(st) - {"temperature", "pressure", "steps"})
+        missing = sorted({"temperature", "pressure", "steps"} - set(st))
+        if extra or missing:
+            raise ValueError(f"{here}: needs exactly temperature, pressure and steps"
+                             + (f"; unknown: {', '.join(extra)}" if extra else "")
+                             + (f"; missing: {', '.join(missing)}" if missing else ""))
+        t = _float(f"{here}.temperature", st["temperature"])
+        if t <= 0:
+            raise ValueError(f"{here}.temperature: must be positive, got {t}")
+        n = _int(f"{here}.steps", st["steps"])
+        if n < 0:
+            raise ValueError(f"{here}.steps: must not be negative, got {n}")
+        out.append({"temperature": t,
+                    "pressure": _float(f"{here}.pressure", st["pressure"]),
+                    "steps": n})
+    return out
+
+
+def _positive_int_or_zero(path, v):
+    v = _int(path, v)
+    if v < 0:
+        raise ValueError(f"{path}: must not be negative, got {v}")
+    return v
+
+
+def _positive(path, v):
+    v = _float(path, v)
+    if v <= 0:
+        raise ValueError(f"{path}: must be positive, got {v}")
+    return v
+
+
 def _nonneg(path, v):
     v = _float(path, v)
     if v < 0:
@@ -471,6 +533,23 @@ _SCHEMA = {
         "task":                 ("uma_task", _str),
         "device":               ("uma_device", _str),
         "inference_settings":   ("uma_inference_settings", _str),
+    },
+    "backend.nvalchemi": {
+        "python":               ("nva_python", _str),
+        "model":                ("nva_model", _str),
+        "device":               ("nva_device", _str),
+        "dtype":                ("nva_dtype", _choice("float32", "float64")),
+        "cueq":                 ("nva_cueq", _bool),
+        "batch_size":           ("nva_batch_size", _positive_int),
+        "timestep":             ("nva_timestep", _positive),
+        "thermostat_time":      ("nva_thermostat_time", _positive),
+        "barostat_time":        ("nva_barostat_time", _positive),
+        "pressure_coupling":    ("nva_pressure_coupling",
+                                 _choice("triclinic", "anisotropic", "isotropic")),
+        "stages":               ("nva_stages", _stages),
+        "fmax":                 ("nva_fmax", _positive),
+        "max_steps":            ("nva_max_steps", _positive_int),
+        "timeout":              ("nva_timeout", _positive_int_or_zero),
     },
     # In-process relaxation, shared by the ase and uma engines.
     "relaxation": {
@@ -696,6 +775,16 @@ def load_config(filepath: str = "cryal.toml") -> Config:
     if cfg.use_parallel:
         from .parallel import parse_workers
         parse_workers(cfg.parallel_workers, cfg.parallel_python)
+
+    # A backend that relaxes a whole batch on one GPU has no use for slots, and
+    # sending its batches to other machines is a design of its own.
+    if cfg.use_parallel:
+        from .backends import backend_class
+        if getattr(backend_class(cfg.energy_backend), "batched", False):
+            raise ValueError(f'parallel.enabled: backend.engine = "{cfg.energy_backend}" '
+                             'relaxes its candidates in batches on one GPU and does '
+                             'not run on [parallel] slots or workers; set '
+                             'parallel.enabled = false')
 
     # --- Validate required files ---
     if not os.path.exists(cfg.molecule_file):

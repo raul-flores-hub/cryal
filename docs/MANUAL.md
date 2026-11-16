@@ -454,7 +454,7 @@ key is left out. Where the shipped `cryal.toml` sets something else, it says
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `engine` | string | `"lammps_mace"` | `"lammps_mace"` (external LAMMPS with MACE-OFF23, the published run), `"ase"` (any ASE calculator, in process), `"uma"` (Meta's UMA, in process) |
+| `engine` | string | `"lammps_mace"` | `"lammps_mace"` (external LAMMPS with MACE-OFF23, the published run), `"ase"` (any ASE calculator, in process), `"uma"` (Meta's UMA, in process), `"nvalchemi"` (NVIDIA ALCHEMI Toolkit, batches on one GPU, in its own environment) |
 | `energy_sanity_max` | number or `false` | `-100.0` | total energies (eV per cell) above this count as a failed relaxation; `false` switches the check off. Calibrated for MACE-OFF: another potential's zero of energy may need another value |
 
 Energies from different engines or potentials are not comparable: never merge
@@ -487,6 +487,51 @@ LAMMPS script. With `[parallel]`, its local slots are limited to one.
 | `task` | string | `""` | **mandatory, no default**: `"omc"` (organic molecular crystals — the one for CSP), `"omat"`, `"oc20"`, `"omol"`, `"odac"`. Each head has its own zero of energy |
 | `device` | string | `"cuda"` | `"cuda"` or `"cpu"` |
 | `inference_settings` | string | `"default"` | `"default"` or a preset name |
+
+### `[backend.nvalchemi]` — read when `engine = "nvalchemi"`
+
+NVIDIA ALCHEMI Toolkit relaxes many structures **together** on one GPU: each
+step evaluates the whole batch in one model call. It brings its own torch,
+CUDA libraries and mace-torch, so it is installed in an environment of its
+own, never in the one CrYAL and LAMMPS run in:
+
+```bash
+python3.12 -m venv ~/nvalchemi
+~/nvalchemi/bin/pip install --extra-index-url https://download.pytorch.org/whl/cu130 \
+    --extra-index-url https://pypi.nvidia.com 'nvalchemi-toolkit[cu13,mace]' ase
+```
+
+CrYAL starts `python` (below) as a worker process for every batch, in
+`steps/batch_<first candidate>/` (`task.json`, `result.json`, `worker.log`).
+The protocol is a triclinic NPT anneal (`stages`), then L-BFGS with the cell
+at zero pressure to `fmax`. With `dtype = "float32"` the model computes only
+the interaction energy in float32 and the atomic reference energies are added
+in float64: total energies in float32 cannot rank crystals (errors of 0.17 eV
+per cell for organic crystals of 336 atoms), the split reproduces float64 to
+2 meV per cell. A structure that explodes is set aside and its stage repeated
+for the rest of the batch.
+
+**It is a different engine, not a faster LAMMPS.** On 30 TMPA-An candidates,
+LAMMPS run twice ended in the same structure 10 times out of 10; LAMMPS and
+nvalchemi, once in 27. Keep one engine for a whole search. Not available with
+`[parallel]`.
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `python` | string | `""` | **required**: the interpreter of the nvalchemi environment, e.g. `"/home/me/nvalchemi/bin/python"` |
+| `model` | string | `""` | **required**: a MACE `.model` file |
+| `device` | string | `"cuda"` | |
+| `dtype` | `"float32"` or `"float64"` | `"float32"` | `"float64"` is slower and uses more memory; for checking |
+| `cueq` | boolean | `true` | cuEquivariance kernels |
+| `batch_size` | integer ≥ 1 | `32` | structures relaxed together. Larger is faster but needs more GPU memory (32 × 336 atoms ≈ 4 GB) and an interruption repeats the whole batch in progress |
+| `timestep` | number > 0 | `0.4` | fs, NPT time step |
+| `thermostat_time` | number > 0 | `40.0` | fs |
+| `barostat_time` | number > 0 | `400.0` | fs |
+| `pressure_coupling` | `"triclinic"`, `"anisotropic"` or `"isotropic"` | `"triclinic"` | |
+| `stages` | list of `{ temperature = K, pressure = bar, steps = n }` | `[{ temperature = 20, pressure = 3000, steps = 6000 }, { temperature = 10, pressure = 1, steps = 6000 }]` | the NPT stages, in order; `[]` minimizes only |
+| `fmax` | number > 0 | `0.001` | eV/Å, L-BFGS stops when the largest force is below this |
+| `max_steps` | integer ≥ 1 | `10000` | L-BFGS steps; a structure that does not reach `fmax` is kept, and the log counts them |
+| `timeout` | integer ≥ 0 | `0` | seconds for one batch; `0` = no limit |
 
 ### `[relaxation]` — read by the `ase` and `uma` engines
 
@@ -714,6 +759,7 @@ Everything goes to `general.output_dir`:
 |---|---|
 | `cryal.log` | the run's log: configuration summary, every candidate, per-cycle summaries |
 | `database.json` | one record per relaxed structure (below); saved after every evaluation (a parallel batch: at its end) |
+| `steps/batch_*/` | `nvalchemi` only: each batch's `task.json`, `result.json` and `worker.log` |
 | `cycle_in_progress.json` | while a cycle runs: its candidates, written before any is evaluated, and each one's outcome as it arrives. Removed when the cycle ends |
 | `cycles.json` | every finished cycle, with how many candidates it planned and kept |
 | `structures/` | the relaxed structure of every record, as CIF |

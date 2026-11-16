@@ -65,9 +65,10 @@ MACE model once already.
 python -m unittest discover -s tests -t .
 ```
 
-369 tests, with the packages of `requirements.txt` and no LAMMPS or GPU; they
+385 tests, with the packages of `requirements.txt` and no LAMMPS or GPU; they
 take seconds. Those of the UMA backend are skipped when fairchem is not
-installed. One expected failure is deliberate: it
+installed, and the one of the real nvalchemi worker unless
+`CRYAL_NVALCHEMI_PYTHON` and `CRYAL_NVALCHEMI_MODEL` are set. One expected failure is deliberate: it
 records that `unwrap_molecule` cannot rebuild a molecule longer than half the
 cell, which is safe only because its single caller is off by default.
 
@@ -102,8 +103,8 @@ one that was never interrupted.
 search algorithm, and every option, its type, its default and what it does.
 
 `cryal.toml` is [TOML](https://toml.io), read with Python's own `tomllib`. The
-tables are `[general]`, `[backend]` (with `[backend.lammps]`, `[backend.ase]`
-and `[backend.uma]`), `[relaxation]`, `[active_learning]`, `[space_groups]`,
+tables are `[general]`, `[backend]` (with `[backend.lammps]`, `[backend.ase]`,
+`[backend.uma]` and `[backend.nvalchemi]`), `[relaxation]`, `[active_learning]`, `[space_groups]`,
 `[volume]`, `[cell]`, `[monoclinic_beta]`, `[gp]`, `[chpi]`, `[contacts]`,
 `[seeds]`, `[integrity]` and `[parallel]`; every key is documented inline in the
 shipped file, and any key left out takes its default.
@@ -197,6 +198,8 @@ backends, distributed relaxations and the alternative searches; a 1.1.0
 | `cryal/fingerprint.py` | structural fingerprint that tells two minima apart (`[duplicates]`) |
 | `cryal/genetic.py` | the genetic algorithm (`general.algorithm = "ga"`), also used by BACH + GA |
 | `cryal/backends/uma.py` | UMA as a named backend, with its mandatory task |
+| `cryal/backends/nvalchemi.py` | batched relaxation with NVIDIA ALCHEMI Toolkit, through a worker process |
+| `cryal/backends/_nvalchemi_worker.py` | that worker: runs in the nvalchemi environment, imports nothing from CrYAL |
 | `cryal/parallel.py` | distributing a cycle's candidates over several machines |
 | `cryal/_remote_worker.py` | what runs on a worker: one candidate, one verdict |
 | `cryal/chpi_optimizer.py` | optional geometric CH–π contact optimizer |
@@ -461,6 +464,7 @@ and returns its energy:
 | `lammps_mace` (default) | an external LAMMPS process driving MACE-OFF23 through `mliap-unified` — the backend used for the published run |
 | `ase` | in-process relaxation with any ASE calculator, named by dotted path |
 | `uma` | in-process relaxation with Meta's UMA (`fairchem-core`) |
+| `nvalchemi` | batches of candidates relaxed together on one GPU by NVIDIA ALCHEMI Toolkit, in an environment of its own |
 
 Omitting the key means `lammps_mace`, so every input written before backends
 existed — including the one archived with `v1.0.0` — keeps its exact meaning.
@@ -488,6 +492,28 @@ script used in the article, so it explores a smaller basin around each
 candidate. And energies are comparable only within one backend and one
 potential: never merge databases built with different engines, and keep the
 backend you started with when resuming a run.
+
+### nvalchemi
+
+NVIDIA ALCHEMI Toolkit relaxes a whole batch of candidates (32 by default) on
+one GPU, with an NPT anneal on a triclinic cell followed by L-BFGS with the
+cell. It lives in its own environment, because it brings its own torch and
+mace-torch; CrYAL runs it as a worker process, as it runs `lmp`.
+
+```toml
+[backend]
+engine = "nvalchemi"
+
+[backend.nvalchemi]
+python = "/home/me/nvalchemi/bin/python"
+model  = "/home/me/.cache/mace/MACE-OFF23_small.model"
+```
+
+On 30 candidates of the TMPA-An crystal it took 35 s per structure against
+307 s for the LAMMPS protocol run one at a time. It is a different engine, not a
+faster LAMMPS: the two ended in the same structure once in 27, where LAMMPS
+against itself did 10 times out of 10. Keep one engine for a whole search.
+Installation, the protocol and every key: docs/MANUAL.md, `[backend.nvalchemi]`.
 
 ### UMA
 
