@@ -129,6 +129,14 @@ class EnergyBackend(ABC):
     #: rather than letting the corruption happen quietly.
     thread_safe: bool = False
 
+    #: Does this backend relax several structures together (relax_batch)?
+    #:
+    #: A batched backend gets a cycle's candidates in groups of batch_size()
+    #: through evaluate_batch(); the others get them one at a time through
+    #: evaluate(), as always. Only nvalchemi says yes: it relaxes a whole batch
+    #: in one GPU process, which is where its speed comes from.
+    batched: bool = False
+
     def __init__(self, cfg, logger=None):
         self.cfg = cfg
         self.logger = logger
@@ -284,3 +292,65 @@ class EnergyBackend(ABC):
                                             "(a covalent bond broke)")
 
         return relaxed, energy
+
+    # -- several structures at once -----------------------------------------
+
+    def batch_size(self) -> int:
+        """How many candidates one relax_batch() call takes."""
+        return 1
+
+    def relax_batch(self, atoms_list, step_dirs, logger=None):
+        """
+        Relax several structures. Returns one (relaxed, energy, reason) per
+        structure, in order; reason is None when it worked.
+
+        The default relaxes them one by one with relax(), so a backend that
+        does not batch needs nothing new. A batched backend overrides it.
+        """
+        out = []
+        for atoms, step_dir in zip(atoms_list, step_dirs):
+            self.note_rejection(None)
+            relaxed, energy = self.relax(atoms, step_dir, logger=logger)
+            out.append((relaxed, energy, None if relaxed is not None and energy is not None
+                        else (self.last_rejection or "the relaxation produced no energy")))
+        return out
+
+    def evaluate_batch(self, atoms_list, step_dirs, ref_bonds, mol_size: int,
+                       logger=None):
+        """
+        evaluate() for several candidates: the same gate before and the same
+        checks after, each structure on its own, around one relax_batch().
+
+        Returns one (relaxed, energy, reason) per candidate, in order; reason
+        is None for a kept candidate. A rejection never stops the others.
+        """
+        logger = logger or self.logger
+        results = [None] * len(atoms_list)
+        todo = []
+        for i, (atoms, step_dir) in enumerate(zip(atoms_list, step_dirs)):
+            os.makedirs(step_dir, exist_ok=True)
+            if not check_bond_integrity(atoms):
+                results[i] = (None, None, "rejected before relaxation — atomic "
+                                          "overlap < 0.8 Å (would explode)")
+            else:
+                todo.append(i)
+        if todo:
+            relaxed = self.relax_batch([atoms_list[i] for i in todo],
+                                       [step_dirs[i] for i in todo], logger=logger)
+            for i, r in zip(todo, relaxed):
+                results[i] = self._check(r, ref_bonds, mol_size)
+        return results
+
+    def _check(self, result, ref_bonds, mol_size):
+        """The checks evaluate() makes after a relaxation, on one result."""
+        relaxed, energy, reason = result
+        if relaxed is None or energy is None:
+            return None, None, reason or "the relaxation produced no energy"
+        limit = getattr(self.cfg, "energy_sanity_max", None)
+        if limit is not None and energy > limit:
+            return None, None, (f"unrealistic energy {energy:.2f} eV, above the "
+                                f"backend.energy_sanity_max bound of {limit}")
+        if getattr(self.cfg, "check_molecular_integrity", False) and ref_bonds:
+            if not check_molecular_integrity(relaxed, mol_size, ref_bonds):
+                return None, None, "molecular integrity failed (a covalent bond broke)"
+        return relaxed, energy, None

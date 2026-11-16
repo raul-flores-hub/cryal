@@ -477,6 +477,10 @@ def _evaluate_batch(struct_list, cfg, backend, cycle: int, batch_start: int,
         n_ok = _evaluate_batch_parallel(plan, cfg, ref_bonds, mol_size, db, logger, pool)
         _report_step_budget(backend, logger)
         return n_ok
+    if getattr(backend, "batched", False):
+        n_ok = _evaluate_batch_batched(plan, cfg, backend, ref_bonds, mol_size, db, logger)
+        _report_step_budget(backend, logger)
+        return n_ok
 
     structs = plan.structs()
     recorded = _recorded_steps(db)
@@ -528,6 +532,57 @@ def _record_earlier(plan: CyclePlan, i: int, s: Dict, cfg, cycle: int, step_name
     logger.info(f"  {step_name}  source={s.get('source','?')}  "
                 f"SG={s.get('space_group','?')}  (evaluated before the run stopped)")
     return int(_record_result(s, relaxed, energy, cfg, cycle, step_name, db, logger))
+
+
+def _evaluate_batch_batched(plan: CyclePlan, cfg, backend, ref_bonds, mol_size: int,
+                            db: CrystalDatabase, logger) -> int:
+    """
+    Relax the plan's pending candidates in groups of backend.batch_size(), each
+    group in one evaluate_batch() call, then record them in candidate order.
+
+    Each group's outcomes go to the plan as soon as it returns, so an
+    interruption loses at most the group in progress.
+    """
+    cycle = plan.cycle
+    structs = plan.structs()
+    todo = plan.pending()
+    size = max(1, backend.batch_size())
+    n_groups = -(-len(todo) // size)
+    t0 = time.time()
+    for g, k in enumerate(range(0, len(todo), size), 1):
+        chunk = todo[k:k + size]
+        names = [_step_name(cycle, plan.batch_start + i) for i in chunk]
+        logger.info(f"  Relaxing {len(chunk)} candidates together, batch {g}/{n_groups} "
+                    f"({names[0]} … {names[-1]})")
+        tg = time.time()
+        results = backend.evaluate_batch(
+            [structs[i]['atoms'] for i in chunk],
+            [os.path.join(cfg.output_dir, "steps", n) for n in names],
+            ref_bonds, mol_size, logger=logger)
+        for i, (relaxed, energy, reason) in zip(chunk, results):
+            plan.note(i, relaxed, energy, reason)
+        logger.info(f"  Batch {g}/{n_groups} done in {(time.time() - tg) / 60:.1f} min")
+    elapsed = time.time() - t0
+
+    recorded = _recorded_steps(db)
+    todo = set(todo)
+    n_ok = 0
+    for i, s in enumerate(structs):
+        step_name = _step_name(cycle, plan.batch_start + i)
+        if i not in todo:
+            n_ok += _record_earlier(plan, i, s, cfg, cycle, step_name, recorded, db, logger)
+            continue
+        relaxed, energy, reason = plan.result(i)
+        logger.info(f"  {step_name}  source={s.get('source','?')}  "
+                    f"SG={s.get('space_group','?')}")
+        if _record_result(s, relaxed, energy, cfg, cycle, step_name, db, logger,
+                          reason=reason):
+            n_ok += 1
+
+    rate = elapsed / len(todo) if todo else 0.0
+    logger.info(f"  {len(todo)} candidates relaxed in {elapsed/60:.1f} min "
+                f"({rate:.1f} s/candidate wall-clock, {n_ok}/{len(structs)} kept)")
+    return n_ok
 
 
 def _evaluate_batch_parallel(plan: CyclePlan, cfg, ref_bonds, mol_size: int,
