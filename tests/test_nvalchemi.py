@@ -268,9 +268,17 @@ class TestRealWorker(unittest.TestCase):
     """The real worker on two benzene crystals, with a short protocol."""
 
     def test_two_crystals(self):
+        self.two_crystals("float32", True)
+
+    def test_two_crystals_in_float64(self):
+        # float64 without cuEquivariance: every float field of the batch must
+        # follow, or Warp's float64 kernels refuse the float32 masses.
+        self.two_crystals("float64", False)
+
+    def two_crystals(self, dtype, cueq):
         tmp = tempfile.mkdtemp(prefix="cryal_nva_real_")
         try:
-            cfg = run_config(tmp, energy_backend="nvalchemi",
+            cfg = run_config(tmp, energy_backend="nvalchemi", nva_dtype=dtype, nva_cueq=cueq,
                              nva_python=os.environ["CRYAL_NVALCHEMI_PYTHON"],
                              nva_model=os.environ["CRYAL_NVALCHEMI_MODEL"],
                              nva_stages=[{"temperature": 20.0, "pressure": 1.0, "steps": 20}],
@@ -281,6 +289,9 @@ class TestRealWorker(unittest.TestCase):
             dirs = [os.path.join(tmp, "steps", f"s{i}") for i in range(2)]
             res = backend.relax_batch([s["atoms"] for s in structs], dirs, logger)
             log = open(os.path.join(tmp, "steps", "batch_s0", "worker.log")).read()
+            # Room for 0.4 atoms/Å³ within MACE-OFF23's 4.5 Å cutoff: nvalchemi's
+            # own 80 overflowed for a cell compressed at 3000 bar.
+            self.assertIn("neighbour matrix: at least 160 neighbours per atom", log)
             for relaxed, energy, reason in res:
                 self.assertIsNone(reason, log)
                 self.assertTrue(np.isfinite(energy))

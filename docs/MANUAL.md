@@ -509,7 +509,8 @@ the interaction energy in float32 and the atomic reference energies are added
 in float64: total energies in float32 cannot rank crystals (errors of 0.17 eV
 per cell for organic crystals of 336 atoms), the split reproduces float64 to
 2 meV per cell. A structure that explodes is set aside and its stage repeated
-for the rest of the batch.
+for the rest of the batch; a stage whose neighbour list overflows (a cell
+squeezed by the 3000 bar stage) is repeated with room for more neighbours.
 
 **It is a different engine, not a faster LAMMPS.** On 30 TMPA-An candidates,
 LAMMPS run twice ended in the same structure 10 times out of 10; LAMMPS and

@@ -48,6 +48,11 @@ about it here:
 * Strongly tilted cells can leave the neighbour list without a method: the
   final single point is computed on the Minkowski-reduced cell, the same
   lattice in a shorter basis.
+* nvalchemi sizes the neighbour matrix from a density of 0.2 atoms/Å³ (80
+  neighbours at 4.5 Å), and a cell compressed at 3000 bar exceeded it
+  ("NeighborOverflowError: 88 > 80", a batch of 240 TMPA-An cells lost). The
+  worker asks for room for 0.4 atoms/Å³ (160) and repeats an overflowing
+  stage with twice as much.
 * PyTorch's caching allocator fragments over an NPT stage until nvalchemi's
   Warp kernels cannot get GPU memory; the backend starts this process with
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (nvalchemi.worker_env).
@@ -105,6 +110,7 @@ def main(task_path, result_path):
     from nvalchemi.dynamics.hooks import AlignCellHook
     from nvalchemi.models.mace import MACEWrapper
     from nvalchemi.neighbors import compute_neighbors
+    from nvalchemiops.neighbors.neighbor_utils import estimate_max_neighbors
 
     download = fm.download_mace_mp_checkpoint
     fm.download_mace_mp_checkpoint = lambda p=None, *a, **k: (
@@ -131,11 +137,10 @@ def main(task_path, result_path):
     timings = {}
 
     def to_batch(idx):
-        b = Batch.from_data_list([AtomicData.from_atoms(geoms[i], device="cpu") for i in idx],
-                                 device=device)
-        b.positions = b.positions.to(dtype)
-        b.cell = b.cell.to(dtype)
-        return b
+        # Every float field in the model's dtype: from_atoms defaults to float32,
+        # and Warp's float64 kernels refuse float32 masses.
+        return Batch.from_data_list([AtomicData.from_atoms(geoms[i], device="cpu", dtype=dtype)
+                                     for i in idx], device=device)
 
     def from_batch(b, idx):
         pos = b.positions.detach().double().cpu().numpy()
@@ -149,8 +154,20 @@ def main(task_path, result_path):
             out.append(a)
         return out
 
+    # Neighbour-matrix width. nvalchemi's hook sizes it once, from an estimate
+    # at 0.2 atoms/Å³: 80 for MACE-OFF23's 4.5 Å cutoff. Relaxed TMPA-An cells
+    # have at most 54 neighbours, but under 3000 bar one reached 88 mid-stage
+    # ("NeighborOverflowError: 88 > 80") and failed a batch of 240. The floor
+    # here is the estimate at 0.4 atoms/Å³ (160 at 4.5 Å; ~16 bytes per atom
+    # and neighbour). If a stage overflows anyway, the floor is doubled and the
+    # stage repeated from its start, at most three times.
+    nc = model.model_config.neighbor_config
+    k_floor = [estimate_max_neighbors(cutoff=nc.cutoff + (nc.skin or 0.0), atomic_density=0.4)]
+    log(f"neighbour matrix: at least {k_floor[0]} neighbours per atom")
+
     def run_stage(label, make_engine, n_steps, prepare=None):
         """One stage over the live structures; repeated without the ones that explode."""
+        overflows = 0
         while True:
             idx = [i for i in range(len(geoms)) if i not in failed]
             if not idx:
@@ -175,6 +192,12 @@ def main(task_path, result_path):
                 timings[label] = timings.get(label, 0.0) + time.time() - t0
                 log(f"{label}: {len(idx)} structures, {time.time() - t0:.0f} s")
                 return
+            if not bad and "NeighborOverflowError" in error and overflows < 3:
+                overflows += 1
+                k_floor[0] *= 2
+                log(f"{label}: neighbour matrix overflowed ({error}); repeating the stage "
+                    f"from its start with at least {k_floor[0]} neighbours per atom")
+                continue
             if not bad:
                 # Failed with every structure finite: no culprit to remove.
                 for i in idx:
@@ -187,7 +210,7 @@ def main(task_path, result_path):
                 f"stage from its start with the other {len(idx) - len(bad)}")
             # geoms[] still holds every structure's state at the stage's start.
 
-    hooks = lambda: model.make_neighbor_hooks()
+    hooks = lambda: model.make_neighbor_hooks(max_neighbors=k_floor[0])
     for k, st in enumerate(task["stages"], 1):
         if st["steps"] <= 0:
             continue
@@ -222,11 +245,10 @@ def main(task_path, result_path):
             a.set_cell(rcell, scale_atoms=False)
             a.wrap()
             reduced.append(a)
-        batch = Batch.from_data_list([AtomicData.from_atoms(a, device="cpu") for a in reduced],
-                                     device=device)
-        batch.positions = batch.positions.to(dtype)
-        batch.cell = batch.cell.to(dtype)
-        compute_neighbors(batch, config=model.model_config.neighbor_config)
+        batch = Batch.from_data_list([AtomicData.from_atoms(a, device="cpu", dtype=dtype)
+                                      for a in reduced], device=device)
+        compute_neighbors(batch, config=model.model_config.neighbor_config,
+                          max_neighbors=k_floor[0])
         out = model(batch)
         energy = out["energy"].detach().double().cpu().numpy().reshape(-1)
         forces = out["forces"].detach().double().cpu()
