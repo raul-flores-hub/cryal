@@ -139,7 +139,7 @@ class Molecule:
         mol = read(path)
         n = len(mol)
         neighbours = [[] for _ in range(n)]
-        for i, j, _ in get_reference_bonds(path):
+        for i, j, *_ in get_reference_bonds(path):
             neighbours[i].append(j)
             neighbours[j].append(i)
         walk, roots = _spanning_walk(mol.positions, neighbours)

@@ -276,6 +276,10 @@ def legacy_to_tables(raw: dict) -> Tuple[Dict[str, Dict[str, object]], List[str]
     if "usechpioptimizer" not in raw:
         put("chpi", "enabled", True)
 
+    # The old loader knew one integrity check, the broken-bond one; cryal.toml
+    # now compares whole bond graphs unless told otherwise.
+    put("integrity", "bonds", "stretch")
+
     unread = sorted(k for k in raw if k not in _KEYS and k not in _COMBINED)
     return tables, unread, notes
 

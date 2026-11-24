@@ -194,6 +194,45 @@ class TestEvaluationContract(unittest.TestCase):
         self.assertEqual(energy, -1000.0)
 
 
+class TestBondGraphIntegrity(unittest.TestCase):
+    """integrity_problem(): "stretch" (published) against "graph" (default)."""
+
+    REF = [(0, 1, 2.0 * 1.52)]        # a C–C bond, max_d at 2 × covalent radii
+
+    def check(self, atoms, mode):
+        from cryal.backends.base import integrity_problem
+        return integrity_problem(atoms, 2, self.REF, mode)
+
+    def test_sound_molecules_pass_both(self):
+        for mode in ("stretch", "graph"):
+            self.assertIsNone(self.check(sane_structure(), mode))
+
+    def test_an_opened_bond_only_the_graph_sees(self):
+        atoms = sane_structure()
+        atoms.positions[1] = [4.4, 2.0, 2.0]          # C–C at 2.4 Å: broken, < 3.04
+        self.assertIsNone(self.check(atoms, "stretch"))
+        self.assertEqual(self.check(atoms, "graph"), "bonds changed: 1 broken, 0 new")
+
+    def test_a_new_bond_between_molecules_fails_the_graph(self):
+        atoms = sane_structure()
+        atoms.positions[2] = [3.5, 3.5, 2.0]          # the second C2, whole, moved so
+        atoms.positions[3] = [5.0, 3.5, 2.0]          # its atom 2 is 1.5 Å from atom 1
+        self.assertIsNone(self.check(atoms, "stretch"))
+        self.assertEqual(self.check(atoms, "graph"), "bonds changed: 0 broken, 1 new")
+
+    def test_the_reference_marks_its_1_3_pairs_as_not_bonded(self):
+        # NeighborList's default skin puts benzene's meta C...C (2.41 Å) in the
+        # reference; "stretch" keeps limiting them, "graph" must not want them.
+        from cryal.backends.base import get_reference_bonds
+        from tests.test_genetic import BENZENE
+        ref = get_reference_bonds(BENZENE)
+        self.assertEqual((len(ref), sum(b[3] for b in ref)), (18, 12))
+
+    def test_an_unknown_mode_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self.check(sane_structure(), "strict")
+
+
 class TestConfigSelection(unittest.TestCase):
 
     def setUp(self):

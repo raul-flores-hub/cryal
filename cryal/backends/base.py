@@ -63,12 +63,20 @@ def get_reference_bonds(mol_file: str, max_ratio: float = 2.0):
     Detect all covalent bonds in the isolated molecule and compute their
     maximum allowed length (used for integrity checks after relaxation).
 
-    Returns list of (i, j, max_allowed_distance).
+    Returns list of (i, j, max_allowed_distance, bonded).
+
+    The pairs are those of ASE's NeighborList at its default skin of 0.3 Å,
+    which the published runs used: besides the covalent bonds they hold the
+    1,3 pairs (the 2.41 Å meta C...C of benzene), and the "stretch" check
+    limits those too. `bonded` marks the covalent bonds proper (natural
+    cutoffs × 1.2, no skin); the "graph" check compares only those.
     """
     mol = read(mol_file)
     cutoffs = natural_cutoffs(mol, mult=1.2)
     nl = NeighborList(cutoffs, self_interaction=False, bothways=False)
     nl.update(mol)
+    tight = NeighborList(cutoffs, self_interaction=False, bothways=True, skin=0.0)
+    tight.update(mol)
 
     bonds = []
     for i in range(len(mol)):
@@ -79,25 +87,68 @@ def get_reference_bonds(mol_file: str, max_ratio: float = 2.0):
                 d = np.linalg.norm(pos_j - mol.positions[i])
                 # max_allowed = max_ratio × (sum of covalent radii)
                 max_d = (cutoffs[i] + cutoffs[j]) * max_ratio / 1.2
-                bonds.append((i, j, max_d))
+                bonds.append((i, j, max_d, bool(j in tight.get_neighbors(i)[0])))
     return bonds
 
 
-def check_molecular_integrity(atoms, mol_size: int, ref_bonds) -> bool:
+INTEGRITY_MODES = ("graph", "stretch")
+
+
+def integrity_problem(atoms, mol_size: int, ref_bonds, mode: str = "stretch"):
     """
-    Return True if all reference bonds are intact in the relaxed crystal.
-    Uses MIC distances to handle atoms wrapped across periodic boundaries.
+    Why the relaxed crystal no longer holds the molecule, or None if it does.
+
+    The atoms are taken molecule by molecule, mol_size at a time, in the order
+    of the molecule file; ref_bonds are get_reference_bonds()' (i, j, max_d,
+    bonded). A pair given without `bonded` counts as a bond.
+
+    mode "stretch" (CrYAL ≤ 1.1, the published runs): a reference bond longer
+    than its max_d (max_bond_ratio × the sum of covalent radii, 2.0 by default)
+    is broken. Nothing else is looked at: a ring can open with its C–C at
+    2.1–2.9 Å, a ring can close or an H can move to another atom, and the
+    molecule still passes.
+
+    mode "graph": the bonds of the crystal (natural cutoffs × 1.2, periodic) must
+    be exactly the molecule's, once per molecule. A missing bond, a new one
+    (inside a molecule or between two) or a hydrogen on another atom all fail.
+    In 16 213 relaxations of a 22-system benchmark, with LAMMPS and with
+    nvalchemi, all accepted by "stretch", 173 (1.1 %) fail here: closed and
+    opened rings, fused molecules and hydrogens on another atom, none a short
+    contact taken for a bond. One, with four isomerized TCNQ molecules, was
+    71 kJ/mol per molecule below everything else in its search.
     """
     if not ref_bonds or mol_size is None:
-        return True
+        return None
     n_mol = len(atoms) // mol_size
-    for m in range(n_mol):
-        offset = m * mol_size
-        for i, j, max_d in ref_bonds:
-            d = atoms.get_distance(offset + i, offset + j, mic=True)
-            if d > max_d:
-                return False
-    return True
+    if mode == "stretch":
+        for m in range(n_mol):
+            offset = m * mol_size
+            for i, j, max_d, *_ in ref_bonds:
+                if atoms.get_distance(offset + i, offset + j, mic=True) > max_d:
+                    return "a covalent bond broke"
+        return None
+    if mode != "graph":
+        raise ValueError(f"unknown integrity mode {mode!r}; use one of {INTEGRITY_MODES}")
+    nl = NeighborList(natural_cutoffs(atoms, mult=1.2), self_interaction=False,
+                      bothways=False, skin=0.0)
+    nl.update(atoms)
+    got = {}
+    for i in range(len(atoms)):
+        for j in nl.get_neighbors(i)[0]:
+            key = (min(i, j), max(i, j))
+            got[key] = got.get(key, 0) + 1          # a bond to an image counts again
+    want = {(m * mol_size + min(b[0], b[1]), m * mol_size + max(b[0], b[1])): 1
+            for m in range(n_mol) for b in ref_bonds if len(b) < 4 or b[3]}
+    broken = sum(max(n - got.get(k, 0), 0) for k, n in want.items())
+    new = sum(max(n - want.get(k, 0), 0) for k, n in got.items())
+    if broken or new:
+        return f"bonds changed: {broken} broken, {new} new"
+    return None
+
+
+def check_molecular_integrity(atoms, mol_size: int, ref_bonds, mode: str = "stretch") -> bool:
+    """True if the relaxed crystal still holds the molecule (see integrity_problem)."""
+    return integrity_problem(atoms, mol_size, ref_bonds, mode) is None
 
 
 # ---------------------------------------------------------------------------
@@ -286,12 +337,19 @@ class EnergyBackend(ABC):
                         f"backend.energy_sanity_max bound of {limit}")
 
         # Molecular integrity: did the relaxation break the molecule?
-        if getattr(self.cfg, "check_molecular_integrity", False) and ref_bonds:
-            if not check_molecular_integrity(relaxed, mol_size, ref_bonds):
-                return self._reject(logger, "molecular integrity failed "
-                                            "(a covalent bond broke)")
+        why = self._integrity(relaxed, ref_bonds, mol_size)
+        if why:
+            return self._reject(logger, why)
 
         return relaxed, energy
+
+    def _integrity(self, relaxed, ref_bonds, mol_size):
+        """The integrity verdict on one relaxed crystal: a reason, or None."""
+        if not (getattr(self.cfg, "check_molecular_integrity", False) and ref_bonds):
+            return None
+        why = integrity_problem(relaxed, mol_size, ref_bonds,
+                                getattr(self.cfg, "integrity_bonds", "graph"))
+        return f"molecular integrity failed ({why})" if why else None
 
     # -- several structures at once -----------------------------------------
 
@@ -350,7 +408,7 @@ class EnergyBackend(ABC):
         if limit is not None and energy > limit:
             return None, None, (f"unrealistic energy {energy:.2f} eV, above the "
                                 f"backend.energy_sanity_max bound of {limit}")
-        if getattr(self.cfg, "check_molecular_integrity", False) and ref_bonds:
-            if not check_molecular_integrity(relaxed, mol_size, ref_bonds):
-                return None, None, "molecular integrity failed (a covalent bond broke)"
+        why = self._integrity(relaxed, ref_bonds, mol_size)
+        if why:
+            return None, None, why
         return relaxed, energy, None

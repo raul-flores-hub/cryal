@@ -719,7 +719,8 @@ class WorkerPool:
             "task_id":  task_id,
             "config":   worker.config_dict,
             "atoms":    atoms_to_dict(atoms),
-            "ref_bonds": [[int(i), int(j), float(d)] for i, j, d in (ref_bonds or [])],
+            "ref_bonds": [[int(b[0]), int(b[1]), float(b[2]), bool(b[3]) if len(b) > 3 else True]
+                          for b in (ref_bonds or [])],
             "mol_size": int(mol_size) if mol_size else None,
         }
         local_task = os.path.join(step_dir, "remote_task.json")

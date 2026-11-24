@@ -256,7 +256,11 @@ class Config:
 
     # --- INTEGRITY ---
     check_molecular_integrity: bool  = True
-    integrity_max_bond_ratio:  float = 2.0
+    integrity_max_bond_ratio:  float = 2.0      # "stretch" mode only
+    # "graph": the crystal's bonds must be exactly the molecule's (the default
+    # since 1.2). "stretch": only broken reference bonds count — CrYAL ≤ 1.1 and
+    # the published runs. See backends.base.integrity_problem.
+    integrity_bonds:           str   = "graph"
 
     # --- PARALLEL EVALUATION ---
     # Candidates within a cycle are independent, so they can be relaxed on
@@ -663,6 +667,7 @@ _SCHEMA = {
     "integrity": {
         "enabled":              ("check_molecular_integrity", _bool),
         "max_bond_ratio":       ("integrity_max_bond_ratio", _float),
+        "bonds":                ("integrity_bonds", _choice("graph", "stretch")),
     },
     "parallel": {
         "enabled":              ("use_parallel", _bool),
@@ -938,7 +943,8 @@ def print_config_summary(cfg: Config, logger=None):
     lines += [
         f"  CH-pi optimizer: {'ON' if cfg.use_chpi_optimizer else 'OFF'}",
         f"  Seeds folder:    {'ON — ' + cfg.seeds_folder if cfg.use_seeds_folder else 'OFF'}",
-        f"  Integrity check: {'ON' if cfg.check_molecular_integrity else 'OFF'}",
+        f"  Integrity check: "
+        f"{'ON (' + cfg.integrity_bonds + ')' if cfg.check_molecular_integrity else 'OFF'}",
         f"  Parallel eval:   {_parallel_line(cfg)}",
         "=" * 60,
     ]

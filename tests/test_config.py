@@ -181,6 +181,13 @@ class TestDefaultsChangedIn12(_TempFiles):
         with self.assertRaises(ValueError):
             self._load(MINIMAL + "[active_learning]\nimprovement_threshold = -1\n")
 
+    def test_integrity_compares_bond_graphs_when_left_out(self):
+        self.assertEqual(self._load(MINIMAL).integrity_bonds, "graph")
+        cfg = self._load(MINIMAL + "[integrity]\nbonds = \"stretch\"\n")
+        self.assertEqual(cfg.integrity_bonds, "stretch")
+        with self.assertRaises(ValueError):
+            self._load(MINIMAL + "[integrity]\nbonds = \"strict\"\n")
+
 
 class TestOldInputs(_TempFiles):
     """The format before cryal.toml: refused by the loader, converted by
@@ -225,6 +232,9 @@ class TestOldInputs(_TempFiles):
         # turns it off. The conversion writes the old default down.
         self.assertTrue(self._converted("").use_chpi_optimizer)
         self.assertFalse(self._converted("useChPiOptimizer = false\n").use_chpi_optimizer)
+
+    def test_an_old_input_keeps_the_old_integrity_check(self):
+        self.assertEqual(self._converted("").integrity_bonds, "stretch")
 
     def test_keys_the_old_loader_ignored_are_listed_not_dropped(self):
         text = convert(self._write(OLD + "someKeyNobodyKnows = 3\n", "_old.in"))

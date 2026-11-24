@@ -721,7 +721,16 @@ blind search with the known structure makes it an informed one.
 | key | type | default | meaning |
 |---|---|---|---|
 | `enabled` | boolean | `true` | reject relaxations that broke or formed covalent bonds |
-| `max_bond_ratio` | number | `2.0` | a bond is broken when longer than this × the sum of covalent radii |
+| `bonds` | `"graph"` or `"stretch"` | `"graph"` | `"graph"`: the relaxed crystal's bonds (1.2 × the sum of covalent radii, periodic) must be exactly the molecule's, once per molecule; a broken bond, a new one or a hydrogen on another atom fails. `"stretch"`: only a molecule bond longer than `max_bond_ratio` × the sum of covalent radii fails (CrYAL ≤ 1.1 and the published runs) |
+| `max_bond_ratio` | number | `2.0` | `"stretch"` only: a bond is broken when longer than this × the sum of covalent radii |
+
+`"stretch"` lets through what a machine-learned potential can do to a molecule
+without pulling it apart: a ring that opens (its C–C at 2.1–2.9 Å, still below
+the 3.0 Å limit) or closes, a hydrogen that moves to another atom. In a
+22-system benchmark, 1.1 % of the relaxations that `"stretch"` accepted had
+such molecules, with LAMMPS and with nvalchemi alike, and one of them was the
+lowest-energy structure of its search. `cryal convert` writes `bonds =
+"stretch"`, the check the old format ran.
 
 ### `[parallel]`
 
