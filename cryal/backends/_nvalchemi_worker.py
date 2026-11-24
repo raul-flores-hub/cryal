@@ -43,6 +43,12 @@ about it here:
   list of the whole batch fail. The state at the start of every stage is
   kept; when a stage fails, the structures with non-finite coordinates are
   marked as failed and the stage is repeated, from its start, with the rest.
+* A cell can also collapse while its numbers stay finite. In a criseno search
+  one ended an NPT stage with a zero lattice vector; nvalchemi refused it when
+  the next stage built its batch, the worker died and the 82 sound structures
+  of the batch were lost with it. A cell under 0.5 Å³ per atom now counts as
+  exploded, like non-finite coordinates, and each structure joins a batch on
+  its own, so one that nvalchemi refuses fails alone.
 * The variable-cell L-BFGS needs aligned cells (a along x, b in the xy
   plane): every cell is rotated so, rigidly, before it.
 * Strongly tilted cells can leave the neighbour list without a method: the
@@ -89,8 +95,19 @@ def atoms_to_dict(a):
             "pbc": [bool(x) for x in a.pbc]}
 
 
-def finite(a):
-    return bool(np.isfinite(a.positions).all() and np.isfinite(a.cell.array).all())
+# A cell below this volume per atom has collapsed: more than ten times denser
+# than diamond (5.7 Å³ per atom), far beyond any molecular crystal at 3000 bar.
+MIN_VOLUME_PER_ATOM = 0.5      # Å³
+
+
+def broken(a):
+    """Why a structure cannot go on (non-finite or collapsed), or None if it can."""
+    if not (np.isfinite(a.positions).all() and np.isfinite(a.cell.array).all()):
+        return "non-finite coordinates"
+    v = abs(float(np.linalg.det(a.cell.array))) / max(len(a), 1)
+    if v < MIN_VOLUME_PER_ATOM:
+        return f"collapsed cell, {v:.3g} Å³ per atom"
+    return None
 
 
 def main(task_path, result_path):
@@ -136,11 +153,27 @@ def main(task_path, result_path):
     failed = {}                                   # index -> reason
     timings = {}
 
-    def to_batch(idx):
-        # Every float field in the model's dtype: from_atoms defaults to float32,
-        # and Warp's float64 kernels refuse float32 masses.
-        return Batch.from_data_list([AtomicData.from_atoms(geoms[i], device="cpu", dtype=dtype)
-                                     for i in idx], device=device)
+    def to_batch(idx, label):
+        """The batch of idx, and the structures that could not join it.
+
+        One by one, so that a structure nvalchemi refuses (it raises on a cell
+        with a zero lattice vector, for one) fails alone instead of taking the
+        whole batch, and the worker, with it. Every float field in the model's
+        dtype: from_atoms defaults to float32, and Warp's float64 kernels
+        refuse float32 masses."""
+        data, refused = [], {}
+        for i in idx:
+            why = broken(geoms[i])
+            if why is None:
+                try:
+                    data.append(AtomicData.from_atoms(geoms[i], device="cpu", dtype=dtype))
+                    continue
+                except Exception as exc:
+                    why = f"{type(exc).__name__}: {exc}"
+            refused[i] = f"could not start {label} ({why})"
+        if refused:
+            return None, refused
+        return Batch.from_data_list(data, device=device), {}
 
     def from_batch(b, idx):
         pos = b.positions.detach().double().cpu().numpy()
@@ -175,7 +208,13 @@ def main(task_path, result_path):
             if prepare:
                 for i in idx:
                     prepare(geoms[i])
-            batch = to_batch(idx)
+            batch, refused = to_batch(idx, label)
+            if refused:
+                failed.update(refused)
+                log(f"{label}: {', '.join(names[i] for i in refused)} refused at the start "
+                    f"({'; '.join(refused.values())}); going on with the other "
+                    f"{len(idx) - len(refused)}")
+                continue
             t0 = time.time()
             error = None
             try:
@@ -185,7 +224,7 @@ def main(task_path, result_path):
             except Exception as exc:              # the batch may hold the culprits
                 error = f"{type(exc).__name__}: {exc}"
             new = from_batch(batch, idx)
-            bad = [i for i, a in zip(idx, new) if not finite(a)]
+            bad = {i: why for i, a in zip(idx, new) if (why := broken(a))}
             if error is None and not bad:
                 for i, a in zip(idx, new):
                     geoms[i] = a
@@ -199,15 +238,16 @@ def main(task_path, result_path):
                     f"from its start with at least {k_floor[0]} neighbours per atom")
                 continue
             if not bad:
-                # Failed with every structure finite: no culprit to remove.
+                # Failed with every structure sound: no culprit to remove.
                 for i in idx:
                     failed[i] = f"{label} failed: {error}"
-                log(f"{label}: failed with no non-finite structure — {error}")
+                log(f"{label}: failed with no broken structure — {error}")
                 return
-            for i in bad:
-                failed[i] = f"exploded during {label} (non-finite coordinates)"
-            log(f"{label}: {', '.join(names[i] for i in bad)} exploded; repeating the "
-                f"stage from its start with the other {len(idx) - len(bad)}")
+            for i, why in bad.items():
+                failed[i] = f"exploded during {label} ({why})"
+            log(f"{label}: {', '.join(names[i] for i in bad)} exploded "
+                f"({'; '.join(bad.values())}); repeating the stage from its start "
+                f"with the other {len(idx) - len(bad)}")
             # geoms[] still holds every structure's state at the stage's start.
 
     hooks = lambda: model.make_neighbor_hooks(max_neighbors=k_floor[0])

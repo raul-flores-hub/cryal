@@ -260,6 +260,43 @@ class TestRuns(NvaCase):
             open(os.path.join(self.out, LEDGER_FILE)))], [0])
 
 
+class TestWorkerChecks(unittest.TestCase):
+    """The real worker's test for a structure that cannot go on.
+
+    It needs only NumPy at import time, so it runs here without nvalchemi."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("nva_worker", NVA.WORKER)
+        cls.W = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.W)
+
+    def crystal(self):
+        from ase import Atoms
+        return Atoms("C2H2", positions=[[0, 0, 0], [1.2, 0, 0], [-1.06, 0, 0], [2.26, 0, 0]],
+                     cell=[[6.0, 0, 0], [0.5, 5.0, 0], [0.3, 0.2, 7.0]], pbc=True)
+
+    def test_a_sound_crystal_goes_on(self):
+        self.assertIsNone(self.W.broken(self.crystal()))
+
+    def test_non_finite_coordinates_are_broken(self):
+        a = self.crystal()
+        a.positions[1, 0] = np.nan
+        self.assertEqual(self.W.broken(a), "non-finite coordinates")
+
+    def test_a_zero_lattice_vector_is_a_collapsed_cell(self):
+        # What a criseno search met: finite numbers, a cell with no volume.
+        a = self.crystal()
+        a.set_cell([[6.0, 0, 0], [0, 0, 0], [0.3, 0.2, 7.0]], scale_atoms=False)
+        self.assertIn("collapsed cell", self.W.broken(a))
+
+    def test_a_crushed_cell_is_collapsed(self):
+        a = self.crystal()
+        a.set_cell(a.cell.array * 0.05, scale_atoms=True)     # 0.026 Å³ per atom
+        self.assertIn("collapsed cell", self.W.broken(a))
+
+
 @unittest.skipUnless(os.environ.get("CRYAL_NVALCHEMI_PYTHON")
                      and os.environ.get("CRYAL_NVALCHEMI_MODEL"),
                      "set CRYAL_NVALCHEMI_PYTHON and CRYAL_NVALCHEMI_MODEL to run the "
